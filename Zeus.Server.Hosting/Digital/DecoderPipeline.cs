@@ -137,8 +137,31 @@ public sealed class DecoderPipeline : IDisposable
         }
         Volatile.Write(ref _srcRate, sampleRate);
         Volatile.Write(ref _receiver, receiver);
+        Volatile.Write(ref _pushed, _pushed + samples.Length);
         Volatile.Write(ref _write, w);        // release: publish after the samples
     }
+
+    // Samples pushed so far (only the audio thread writes it), and its value at
+    // the last slot boundary the worker saw (-1: none yet, or the grid changed).
+    private long _pushed;
+    private long _pushedAtBoundary = -1;
+
+    /// <summary>Share of a slot's audio that must have arrived for it to be
+    /// decoded. While we transmit, no RX audio is pushed.</summary>
+    internal const double MinSlotCoverage = 0.8;
+
+    /// <summary>
+    /// Did the slot that just ended receive enough audio to decode? While we
+    /// transmit no RX audio reaches the pipeline, so the ring hardly moves; the
+    /// "slot that just ended" snapshot is then mostly the PREVIOUS slot, and
+    /// decoding it re-published that slot's messages ~1.6 s off in dt, as if
+    /// heard again during our own transmission — duplicate rows, duplicate
+    /// PSK Reporter spots, and the DX's last message handed to the TX sequencer
+    /// a second time. Unknown (first slot, grid change) counts as enough.
+    /// </summary>
+    internal static bool HeardEnough(long pushedAtSlotStart, long pushedNow, int slotSamples) =>
+        pushedAtSlotStart < 0 || slotSamples <= 0
+        || pushedNow - pushedAtSlotStart >= MinSlotCoverage * slotSamples;
 
     /// <summary>
     /// Slot watcher. Wakes shortly after each boundary, snapshots the slot that
@@ -163,6 +186,7 @@ public sealed class DecoderPipeline : IDisposable
                 {
                     _watchedMode = mode;
                     _currentSlot = -1;
+                    _pushedAtBoundary = -1;
                 }
 
                 long slot = SlotClock.SlotIndex(now, mode);
@@ -170,6 +194,9 @@ public sealed class DecoderPipeline : IDisposable
 
                 long ended = slot - 1;
                 _currentSlot = slot;
+                long pushedNow = Volatile.Read(ref _pushed);
+                long pushedAtSlotStart = _pushedAtBoundary;
+                _pushedAtBoundary = pushedNow;
                 if (ended < 0) continue;
 
                 float[] audio;
@@ -197,6 +224,25 @@ public sealed class DecoderPipeline : IDisposable
                 double msSinceBoundary = now - SlotClock.SlotStartMs(slot, mode);
                 int samplesSinceBoundary = (int)(msSinceBoundary * rate / 1000.0);
                 int slotSamples = SlotClock.SlotMs(mode) * rate / 1000;
+
+                if (!HeardEnough(pushedAtSlotStart, pushedNow, slotSamples))
+                {
+                    // Most of this slot never arrived (we were transmitting):
+                    // the ring holds the previous slot, not this one. Publish it
+                    // empty — the TX sequencer still needs its window — and do
+                    // not decode, capture or report anything.
+                    _log.LogDebug("ft8: slot {Slot} not decoded — only {Pct:0}% of its audio arrived",
+                        (long)SlotClock.SlotStartMs(ended, mode),
+                        100.0 * (pushedNow - pushedAtSlotStart) / slotSamples);
+                    _events.PublishFt8Decode(new Ft8DecodeBatch
+                    {
+                        Receiver = rx,
+                        SlotStartUnixMs = (long)SlotClock.SlotStartMs(ended, mode),
+                        Protocol = mode == DigitalMode.Ft4 ? "FT4" : "FT8",
+                        Decodes = Array.Empty<Ft8DecodeDto>(),
+                    });
+                    continue;
+                }
 
                 int end = w - samplesSinceBoundary;   // ring index of the boundary
                 audio = Snapshot(end, slotSamples);
