@@ -87,6 +87,12 @@ see the corresponding GitHub Release page.
   text if it fits and refused otherwise. Calls in `<brackets>` can be sent,
   a compound call without a report goes out in full, lower case and extra
   spaces are accepted, and FT4 no longer lists the same message twice.
+- **No more ghost decodes in your own transmit slots.** While Zeus transmits
+  no receive audio reaches the FT8/FT4 decoder, and the slot you transmitted
+  in was decoded from what was left — the previous slot, ~1.6 s off — so every
+  TX slot repeated the previous slot's messages in the table, sent them to PSK
+  Reporter again and handed the DX's last message to the sequencer twice. A
+  slot that did not receive its audio is now published empty.
 
 ### 🖼️ SSTV — receive, gallery and transmit, in core
 

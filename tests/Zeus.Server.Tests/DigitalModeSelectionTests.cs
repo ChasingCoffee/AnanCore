@@ -65,4 +65,29 @@ public sealed class DigitalModeSelectionTests
         mode = DigitalMode.Ft4;
         Assert.Equal(DigitalMode.Ft4, pipeline.CurrentMode);
     }
+
+    // While we transmit no RX audio is pushed, so the slot that "just ended"
+    // would be snapshot from a ring still holding the previous slot. On air an
+    // FT8 TX slot received ~1.6 s of its 15 s; such a slot must not be decoded.
+    [Theory]
+    [InlineData(-1, 0, true)]                     // first slot / grid change: unknown
+    [InlineData(0, 720_000, true)]                // a whole FT8 slot at 48 kHz
+    [InlineData(0, 700_000, true)]                // a little short (timer jitter)
+    [InlineData(0, 76_800, false)]                // 1.6 s: we were transmitting
+    [InlineData(0, 120_000, false)]               // 2.5 s of an FT4 slot... at FT8 length
+    [InlineData(1_000_000, 1_000_000, false)]     // nothing arrived at all
+    public void OnlyASlotThatReceivedItsAudioIsDecoded(long atStart, long now, bool decode)
+    {
+        const int ft8SlotAt48k = 15 * 48_000;
+        Assert.Equal(decode, DecoderPipeline.HeardEnough(atStart, now, ft8SlotAt48k));
+    }
+
+    [Fact]
+    public void AnFt4TransmitSlotIsNotDecodedEither()
+    {
+        const int ft4SlotAt48k = 7_500 * 48;              // 7.5 s
+        // FT4 transmits ~5 s of the 7.5 s slot: ~2.5 s of RX audio arrives.
+        Assert.False(DecoderPipeline.HeardEnough(0, 2_500 * 48, ft4SlotAt48k));
+        Assert.True(DecoderPipeline.HeardEnough(0, ft4SlotAt48k, ft4SlotAt48k));
+    }
 }
