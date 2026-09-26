@@ -76,6 +76,12 @@ see the corresponding GitHub Release page.
   20 m slots, three passes decode 38 % more (470 → 651). The first pass is
   still published at once, so replies to a QSO are not delayed; later passes
   add their decodes to the same slot as they finish.
+- **FT8/FT4 messages go out as typed, or not at all.** The encoder inherited
+  ft8_lib's habit of turning a third field it did not understand into a
+  report of +00 (and `-99` into `RR36`); now such a message is sent as free
+  text if it fits and refused otherwise. Calls in `<brackets>` can be sent,
+  a compound call without a report goes out in full, lower case and extra
+  spaces are accepted, and FT4 no longer lists the same message twice.
 
 ## [0.10.9] — 2026-07-05
 

@@ -104,11 +104,14 @@ public static class FtxDecoder
             float timeSec = (cand.TimeOffset + (float)cand.TimeSub / mon.Wf.TimeOsr) * mon.SymbolPeriod;
 
             // The same message often wins several candidates (and, after a
-            // subtraction, can leave a trace a later pass decodes again).
+            // subtraction, can leave a trace a later pass decodes again). One
+            // text is one transmission, so keep the first (best-scoring) copy —
+            // as WSJT-X does. ft8_lib only merged copies within 5 Hz, and FT4,
+            // with 20.8 Hz tones, listed the same message twice ~10 Hz apart.
             bool dup = false;
             foreach (var d in output)
             {
-                if (d.Text == text && MathF.Abs(d.FreqHz - freqHz) < 5.0f)
+                if (d.Text == text)
                 {
                     dup = true;
                     break;

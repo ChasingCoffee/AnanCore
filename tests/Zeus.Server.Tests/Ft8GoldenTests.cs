@@ -17,6 +17,15 @@ public sealed class Ft8GoldenTests
 {
     private static readonly string Dir = Path.Combine(AppContext.BaseDirectory, "TestData", "ft8");
 
+    /// <summary>The native lines with later copies of the same message text
+    /// dropped: ft8_lib only merged copies within 5 Hz, so FT4 listed a message
+    /// twice ~10 Hz apart; the decoder now keeps the first, as WSJT-X does.</summary>
+    internal static List<string> FirstOfEachText(IEnumerable<string> lines)
+    {
+        var seen = new HashSet<string>();
+        return lines.Where(l => seen.Add(l.Split('\t')[0])).ToList();
+    }
+
     internal static string Line(Ft8DecodeDto d) => string.Create(CultureInfo.InvariantCulture,
         $"{d.Text}\t{d.FreqHz}\t{d.DtSec:0.00}\t{d.SnrDb}\t{d.Score}");
 
@@ -41,7 +50,7 @@ public sealed class Ft8GoldenTests
             bool isFt4 = f32.EndsWith("_FT4.f32", StringComparison.Ordinal);
             var got = Ft8Managed.ToDtos(FtxDecoder.Decode(ReadF32(f32), FtxDecoder.DecodeRate, isFt4, table))
                 .Select(Line).ToList();
-            var want = File.ReadAllLines(Path.ChangeExtension(f32, ".native.tsv")).ToList();
+            var want = FirstOfEachText(File.ReadAllLines(Path.ChangeExtension(f32, ".native.tsv")));
             Assert.True(want.SequenceEqual(got),
                 $"{Path.GetFileName(f32)}\nnative:  {string.Join(" | ", want)}\nmanaged: {string.Join(" | ", got)}");
             total += got.Count;
