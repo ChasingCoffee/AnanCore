@@ -319,6 +319,9 @@
   background: color-mix(in srgb, var(--hud-worked) 14%, transparent);
 }
 .ft8-row--new    { color: var(--hud-new); }
+/* A DXCC entity not yet in the log: the accent the theme reserves for "new
+   DXCC/grid", in bold so it reads apart from a new grid. */
+.ft8-row--dxcc   { color: var(--hud-new); font-weight: 700; }
 
 /* Our own transmissions, echoed into the decode flow (WSJT-X yellow Tx line).
    Reads unmistakably as YOUR TX, not a received decode: --tx accent + badge. */

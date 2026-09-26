@@ -89,6 +89,23 @@ describe('classifyDecode', () => {
     expect(classifyDecode(row('CQ RK9AX MO05', { workedBefore: true }))).toBe('worked');
   });
 
+  it('lights a sender from a DXCC entity not yet worked', () => {
+    const worked = new Set([281, 291]); // Spain, United States
+    const dx = (text: string, dxcc: number | null) => row(text, { dxcc });
+    expect(classifyDecode(dx('CQ EA8AR IL18', 29), undefined, undefined, undefined, worked)).toBe('dxcc');
+    expect(classifyDecode(dx('CQ EA5IUE IM76', 281), undefined, undefined, undefined, worked)).toBe('cq');
+    expect(classifyDecode(dx('K1ABC EA8AR -10', 29), undefined, undefined, undefined, worked)).toBe('dxcc');
+    // Someone calling me still shows as 'me', new DXCC or not.
+    expect(classifyDecode(dx('KB2UKA EA8AR -10', 29), 'KB2UKA', undefined, undefined, worked)).toBe('me');
+    // A worked-before station from a new entity is still a new DXCC (a new country for the log).
+    expect(
+      classifyDecode(dx('CQ EA8AR IL18', 29), undefined, undefined, new Set(['EA8AR']), worked),
+    ).toBe('dxcc');
+    // Unknown entity, or the worked set not loaded yet: never flagged.
+    expect(classifyDecode(dx('CQ XX9ZZ', null), undefined, undefined, undefined, worked)).toBe('cq');
+    expect(classifyDecode(dx('CQ EA8AR IL18', 29), undefined, undefined, undefined, null)).toBe('cq');
+  });
+
   it('returns normal for a directed decode with no grid', () => {
     const grids = new Set<string>();
     expect(classifyDecode(row('GJ0KYZ RK9AX -12'), undefined, grids)).toBe('normal');

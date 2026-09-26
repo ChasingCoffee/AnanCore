@@ -4406,6 +4406,30 @@ public static class ZeusEndpoints
             }, logbook, plugin, log);
         });
 
+        // DXCC entities already in the logbook, any band or mode: the stored
+        // DXCC number, or the entity of the callsign when an entry has none.
+        // The FT8/FT4 table lights decodes from any other entity as new DXCC.
+        app.MapGet("/api/log/worked-dxcc", async (LogbookPluginBridge logbook, HttpContext ctx) =>
+        {
+            var plugin = logbook.Current;
+            if (plugin is null)
+                return Results.Ok(new { dxcc = Array.Empty<int>() });
+
+            return await LogbookPluginMappings.GuardAsync(async () =>
+            {
+                var worked = new HashSet<int>();
+                const int page = 500;
+                for (int skip = 0; ; skip += page)
+                {
+                    var p = await plugin.GetEntriesAsync(skip, page, ctx.RequestAborted);
+                    foreach (var e in p.Entries)
+                        if ((e.Dxcc ?? Zeus.Server.Hosting.Dxcc.DxccTable.Default.Lookup(e.Callsign)?.Dxcc) is int d) worked.Add(d);
+                    if (p.Entries.Count < page) break;
+                }
+                return Results.Ok(new { dxcc = worked.Order().ToArray() });
+            }, logbook, plugin, log);
+        });
+
         app.MapPost("/api/log/entry", async (
             CreateLogEntryRequest req,
             LogbookPluginBridge logbook,
@@ -4431,6 +4455,19 @@ public static class ZeusEndpoints
                 var enriched = await TryQrzFullNameAsync(qrz, req.Callsign, ctx.RequestAborted);
                 if (!string.IsNullOrWhiteSpace(enriched))
                     req = req with { Name = enriched };
+            }
+
+            // DXCC enrichment: a QSO logged without its entity (FT8 auto-log,
+            // a quick manual entry) gets it from the callsign.
+            if (req.Dxcc is null || string.IsNullOrWhiteSpace(req.Country))
+            {
+                var entity = Zeus.Server.Hosting.Dxcc.DxccTable.Default.Lookup(req.Callsign);
+                if (entity is not null)
+                    req = req with
+                    {
+                        Dxcc = req.Dxcc ?? entity.Dxcc,
+                        Country = string.IsNullOrWhiteSpace(req.Country) ? entity.Name : req.Country,
+                    };
             }
 
             var plugin = logbook.Current;

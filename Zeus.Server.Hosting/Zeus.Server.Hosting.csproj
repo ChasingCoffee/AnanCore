@@ -16,6 +16,11 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
+  <!-- AD1C's DXCC prefix list (Dxcc/DxccTable.cs; MIT, Dxcc/LICENSE.cty). -->
+  <ItemGroup>
+    <EmbeddedResource Include="Dxcc\cty.csv" LogicalName="Zeus.Dxcc.cty.csv" />
+  </ItemGroup>
+
   <!-- Mirror the implicit usings that Microsoft.NET.Sdk.Web injects automatically.
        Required because we use the plain Sdk (so the assembly can be referenced
        by non-web consumers like Zeus.Desktop without dragging in the Web SDK

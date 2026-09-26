@@ -12,7 +12,7 @@ import { parseFt8Message } from '../../dsp/ft8-message';
 import { tryParseSender } from '../../dsp/ft8-sender';
 import { slotMsFor } from '../../dsp/ft8-tx-runner';
 
-export type Ft8RowClass = 'cq' | 'me' | 'worked' | 'new' | 'normal';
+export type Ft8RowClass = 'cq' | 'me' | 'dxcc' | 'worked' | 'new' | 'normal';
 
 /**
  * Classify a decode for color-coding. `myCall` enables the directed-at-me
@@ -29,22 +29,33 @@ export type Ft8RowClass = 'cq' | 'me' | 'worked' | 'new' | 'normal';
  * is new — but a CQ from a station already worked shows as 'worked', so the
  * operator sees at a glance it needs no answer.
  *
- * Precedence: worked CQ > cq > me > worked > new > normal. 'me' (someone
- * calling YOU) outranks worked-before; an unworked CQ outranks everything.
+ * `workedDxcc` (the DXCC entities in the log, any band or mode) lights a
+ * decode whose sender (`row.dxcc`, resolved server-side) is from an entity
+ * not yet worked: 'dxcc'.
+ *
+ * Precedence — CQ rows: new DXCC > worked > cq. Other rows: me > new DXCC >
+ * worked > new grid > normal. Someone calling YOU always shows as 'me'.
  */
 export function classifyDecode(
   row: Ft8Row,
   myCall?: string,
   workedGrids?: ReadonlySet<string>,
   workedCalls?: ReadonlySet<string>,
+  workedDxcc?: ReadonlySet<number> | null,
 ): Ft8RowClass {
   const tokens = row.text.trim().split(/\s+/);
   const first = tokens[0]?.toUpperCase() ?? '';
   const me = myCall?.toUpperCase();
+  // A sender from a DXCC entity not yet in the log (only once that set is known).
+  const newDxcc = workedDxcc != null && row.dxcc != null && !workedDxcc.has(row.dxcc);
 
   // FT8 standard message: "<call-to> <call-from> <grid/report>".
-  if (first === 'CQ') return isWorkedBefore(row, workedCalls) ? 'worked' : 'cq'; // (my own CQ too)
+  if (first === 'CQ') {
+    if (newDxcc) return 'dxcc';
+    return isWorkedBefore(row, workedCalls) ? 'worked' : 'cq'; // (my own CQ too)
+  }
   if (me && first === me) return 'me';              // someone is calling ME
+  if (newDxcc) return 'dxcc';                       // a new DXCC entity
   if (isWorkedBefore(row, workedCalls)) return 'worked'; // prior FT8/FT4 QSO
   if (workedGrids) {
     const grid = parseFt8Message(row.text).grid;
@@ -77,6 +88,7 @@ function fmtSlot(m: Ft8SlotMark): string {
 const CLASS_CSS: Record<Ft8RowClass, string> = {
   cq: 'ft8-row--cq',
   me: 'ft8-row--me',
+  dxcc: 'ft8-row--dxcc',
   worked: 'ft8-row--worked',
   new: 'ft8-row--new',
   normal: '',
@@ -116,11 +128,12 @@ export function Ft8DecodeTable({
   // Render-time worked-before decoration (see classifyDecode): re-renders when
   // the worked-set fetch lands, so early rows self-heal.
   const workedCalls = useDigitalWorkedStore((s) => s.calls);
+  const workedDxcc = useDigitalWorkedStore((s) => s.dxcc);
 
   const rows =
     showOnlyCq || hideWorkedBefore
       ? allRows.filter((r) => {
-          const cls = classifyDecode(r, myCall, workedGrids, workedCalls);
+          const cls = classifyDecode(r, myCall, workedGrids, workedCalls, workedDxcc);
           // Show-only-CQ goes by the message, not the colour: a worked
           // station's CQ is purple now and must still show.
           const isCq = r.text.trim().toUpperCase().startsWith('CQ ');
@@ -137,7 +150,7 @@ export function Ft8DecodeTable({
       kind: 'rx',
       t: r.slotStartUnixMs,
       row: r,
-      cls: classifyDecode(r, myCall, workedGrids, workedCalls),
+      cls: classifyDecode(r, myCall, workedGrids, workedCalls, workedDxcc),
     })),
     ...(txEchoes ?? []).map<FlowItem>((e) => ({ kind: 'tx', t: e.timeUtcMs, echo: e })),
     // A separator sorts just before its slot ends, so it heads everything in

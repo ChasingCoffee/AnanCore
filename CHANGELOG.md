@@ -97,6 +97,16 @@ see the corresponding GitHub Release page.
   when the picture ends. Drive, PA and PureSignal are left alone.
   *(#35, #36)*
 
+### 🌍 DXCC — country of every decode, new DXCC highlighted
+
+- **FT8/FT4 decodes show their country, and new ones stand out.** The
+  decode table's Country column, empty until now, shows the sender's DXCC
+  entity, resolved from its callsign with AD1C's country file (the one
+  WSJT-X and most loggers use: exact calls, portable prefixes, /MM and /AM).
+  A decode from an entity not yet in your log — any band, any mode — is shown
+  in bold accent blue as a **new DXCC**. QSOs logged from FT8/FT4 now carry
+  their DXCC number and country too.
+
 ### 📍 Spotting — PSK Reporter and WSPRnet
 
 - **Your decodes reach the spotting networks.** The Spotting panel's PSK

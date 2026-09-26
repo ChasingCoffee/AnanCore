@@ -222,6 +222,51 @@ public sealed class LogbookEndpointBridgeTests
         Assert.Equal("K1ABC", plugin.LastCreated!.Callsign);
     }
 
+    // A QSO logged without its DXCC entity (the FT8 auto-log sends none) gets
+    // it, and the country name, from the callsign; one that has them keeps them.
+    [Fact]
+    public async Task Create_FillsDxccAndCountryFromTheCallsign()
+    {
+        var plugin = new FakeLogbookPlugin();
+        using var factory = new Factory();
+        factory.Attach(plugin);
+        using var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/log/entry", Qso("ea8ar"))).StatusCode);
+        Assert.Equal(29, plugin.LastCreated!.Dxcc);
+        Assert.Equal("Canary Islands", plugin.LastCreated.Country);
+
+        var given = Qso("ea8ar") with { Dxcc = 281, Country = "Spain" };
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/api/log/entry", given)).StatusCode);
+        Assert.Equal(281, plugin.LastCreated!.Dxcc);
+        Assert.Equal("Spain", plugin.LastCreated.Country);
+    }
+
+    [Fact]
+    public async Task WorkedDxcc_ListsTheEntitiesInTheLog()
+    {
+        var plugin = new FakeLogbookPlugin();
+        using var factory = new Factory();
+        factory.Attach(plugin);
+        using var client = factory.CreateClient();
+        foreach (var call in new[] { "ea5iue", "ea8ar", "k1abc", "w9xyz" })
+            await client.PostAsJsonAsync("/api/log/entry", Qso(call));
+
+        var body = await client.GetFromJsonAsync<WorkedDxccBody>("/api/log/worked-dxcc");
+        Assert.Equal([29, 281, 291], body!.Dxcc);
+    }
+
+    [Fact]
+    public async Task WorkedDxcc_IsEmptyWithoutALogbook()
+    {
+        using var factory = new Factory();
+        using var client = factory.CreateClient();
+        var body = await client.GetFromJsonAsync<WorkedDxccBody>("/api/log/worked-dxcc");
+        Assert.Empty(body!.Dxcc);
+    }
+
+    private sealed record WorkedDxccBody(int[] Dxcc);
+
     [Fact]
     public async Task PresentPluginV1_CapabilitiesAndPatchReportEditingUnsupported()
     {

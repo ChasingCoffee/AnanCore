@@ -38,6 +38,7 @@ public static class Ft8Managed
             if (list.Count == MaxDecodesPerSlot) break;
             string text = d.Text.Trim();
             if (text.Length == 0) continue;
+            var entity = Dxcc.DxccTable.Default.Lookup(PskReporterUploader.ExtractSenderCallsign(text));
             list.Add(new Ft8DecodeDto
             {
                 SnrDb = d.SnrDb,
@@ -46,7 +47,8 @@ public static class Ft8Managed
                 Score = d.Score,
                 Text = text,
                 WorkedBefore = false,        // plugin has no logbook — UI derives it
-                Country = null,
+                Country = entity?.Name,
+                Dxcc = entity?.Dxcc,
             });
         }
         return list;

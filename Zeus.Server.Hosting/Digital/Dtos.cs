@@ -28,9 +28,12 @@ public sealed record Ft8DecodeDto
     /// derives worked-before at render time from digital-worked-store.</summary>
     [JsonPropertyName("workedBefore")] public bool WorkedBefore { get; init; }
 
-    /// <summary>Abbreviated DXCC entity from the sender's callsign prefix
-    /// (FT8 never transmits country). null when unknown.</summary>
+    /// <summary>DXCC entity name of the sender, from its callsign (FT8 never
+    /// transmits a country; Dxcc/DxccTable). null when unknown.</summary>
     [JsonPropertyName("country")] public string? Country { get; init; }
+
+    /// <summary>ADIF DXCC entity number of the sender. null when unknown.</summary>
+    [JsonPropertyName("dxcc")] public int? Dxcc { get; init; }
 }
 
 /// <summary>A completed slot's decodes for one receiver — the `ft8decode` payload.</summary>
