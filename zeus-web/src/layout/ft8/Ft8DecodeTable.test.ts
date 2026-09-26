@@ -49,8 +49,9 @@ describe('classifyDecode', () => {
     expect(classifyDecode(row('GJ0KYZ K1ABC MO05'), undefined, undefined, worked)).toBe('normal');
     // The TARGET being worked must NOT flag the row (sender is token 1).
     expect(classifyDecode(row('RK9AX K1ABC MO05'), undefined, undefined, worked)).toBe('normal');
-    // Precedence holds: CQ and 'me' still outrank worked.
-    expect(classifyDecode(row('CQ RK9AX MO05'), undefined, undefined, worked)).toBe('cq');
+    // A worked station's CQ shows as worked; 'me' still outranks worked.
+    expect(classifyDecode(row('CQ RK9AX MO05'), undefined, undefined, worked)).toBe('worked');
+    expect(classifyDecode(row('CQ K1ABC FN42'), undefined, undefined, worked)).toBe('cq');
     expect(classifyDecode(row('KB2UKA RK9AX -12'), 'KB2UKA', undefined, worked)).toBe('me');
   });
 
@@ -84,8 +85,8 @@ describe('classifyDecode', () => {
     ).toBe('me');
   });
 
-  it('keeps CQ above worked-before', () => {
-    expect(classifyDecode(row('CQ RK9AX MO05', { workedBefore: true }))).toBe('cq');
+  it('shows a worked station\'s CQ as worked-before', () => {
+    expect(classifyDecode(row('CQ RK9AX MO05', { workedBefore: true }))).toBe('worked');
   });
 
   it('returns normal for a directed decode with no grid', () => {

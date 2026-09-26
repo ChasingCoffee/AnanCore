@@ -62,6 +62,22 @@ describe('Ft8DecodeTable filters', () => {
     unmount();
   });
 
+  it('shows a worked station\'s CQ in the worked colour, and Show-only-CQ keeps it', () => {
+    act(() => {
+      // K1ABC (the CQ caller) has been worked before.
+      useDigitalWorkedStore.setState({ calls: new Set<string>(['K1ABC']), loaded: true });
+    });
+    const { container, unmount } = render(
+      createElement(Ft8DecodeTable, { myCall: 'MYCALL', showOnlyCq: true }),
+    );
+    const cqRow = [...container.querySelectorAll('tbody tr')].find((tr) =>
+      tr.textContent?.includes('CQ K1ABC FN42'),
+    );
+    expect(cqRow?.className).toBe('ft8-row--worked');
+    expect(bodyRowCount(container)).toBe(2); // the worked CQ + the row calling me
+    unmount();
+  });
+
   it('Hide-worked-before drops rows the server flagged worked', () => {
     const { container, unmount } = render(
       createElement(Ft8DecodeTable, {

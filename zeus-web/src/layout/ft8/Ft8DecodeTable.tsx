@@ -26,11 +26,11 @@ export type Ft8RowClass = 'cq' | 'me' | 'worked' | 'new' | 'normal';
  * a fallback for payloads that still carry the server flag. `workedGrids`
  * (optional, 4-char upper-case) lights an otherwise-plain decode whose grid we
  * have NOT worked yet ('new'). CQ keeps its own green class even when its grid
- * is new — CQ is the louder signal in the table and the existing precedence is
- * relied on elsewhere.
+ * is new — but a CQ from a station already worked shows as 'worked', so the
+ * operator sees at a glance it needs no answer.
  *
- * Precedence: cq > me > worked > new > normal. 'me' (someone calling YOU)
- * outranks worked-before; CQ outranks everything.
+ * Precedence: worked CQ > cq > me > worked > new > normal. 'me' (someone
+ * calling YOU) outranks worked-before; an unworked CQ outranks everything.
  */
 export function classifyDecode(
   row: Ft8Row,
@@ -43,7 +43,7 @@ export function classifyDecode(
   const me = myCall?.toUpperCase();
 
   // FT8 standard message: "<call-to> <call-from> <grid/report>".
-  if (first === 'CQ') return 'cq';                  // a CQ row (even my own)
+  if (first === 'CQ') return isWorkedBefore(row, workedCalls) ? 'worked' : 'cq'; // (my own CQ too)
   if (me && first === me) return 'me';              // someone is calling ME
   if (isWorkedBefore(row, workedCalls)) return 'worked'; // prior FT8/FT4 QSO
   if (workedGrids) {
@@ -121,7 +121,10 @@ export function Ft8DecodeTable({
     showOnlyCq || hideWorkedBefore
       ? allRows.filter((r) => {
           const cls = classifyDecode(r, myCall, workedGrids, workedCalls);
-          if (showOnlyCq && cls !== 'cq' && cls !== 'me') return false;
+          // Show-only-CQ goes by the message, not the colour: a worked
+          // station's CQ is purple now and must still show.
+          const isCq = r.text.trim().toUpperCase().startsWith('CQ ');
+          if (showOnlyCq && !isCq && cls !== 'me') return false;
           if (hideWorkedBefore && cls === 'worked') return false;
           return true;
         })
