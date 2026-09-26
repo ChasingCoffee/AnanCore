@@ -28,6 +28,10 @@ interface DigitalWorkedState {
   calls: ReadonlySet<string>;
   /** True once the first fetch has succeeded. */
   loaded: boolean;
+  /** DXCC entities already in the logbook, any band or mode
+   *  (GET /api/log/worked-dxcc); null until the first fetch succeeds, so
+   *  nothing is flagged as a new DXCC before the set is known. */
+  dxcc: ReadonlySet<number> | null;
   /** Re-fetch the worked set from GET /api/log/digital-worked. */
   refresh: (signal?: AbortSignal) => Promise<void>;
 }
@@ -35,21 +39,38 @@ interface DigitalWorkedState {
 export const useDigitalWorkedStore = create<DigitalWorkedState>((set) => ({
   calls: new Set<string>(),
   loaded: false,
+  dxcc: null,
 
   refresh: async (signal) => {
-    try {
-      const res = await fetch('/api/log/digital-worked', { signal });
-      if (!res.ok) return; // keep the last good set
-      const j = (await res.json()) as { calls?: unknown };
-      if (!Array.isArray(j.calls)) return;
-      const calls = new Set<string>();
-      for (const c of j.calls) {
-        if (typeof c === 'string' && c.trim().length > 0) calls.add(c.trim().toUpperCase());
-      }
-      set({ calls, loaded: true });
-    } catch {
-      /* transient — the next trigger recovers */
-    }
+    // Two independent sets: one failing must not hold the other back.
+    await Promise.all([
+      (async () => {
+        try {
+          const res = await fetch('/api/log/digital-worked', { signal });
+          if (!res.ok) return; // keep the last good set
+          const j = (await res.json()) as { calls?: unknown };
+          if (!Array.isArray(j.calls)) return;
+          const calls = new Set<string>();
+          for (const c of j.calls) {
+            if (typeof c === 'string' && c.trim().length > 0) calls.add(c.trim().toUpperCase());
+          }
+          set({ calls, loaded: true });
+        } catch {
+          /* transient — the next trigger recovers */
+        }
+      })(),
+      (async () => {
+        try {
+          const res = await fetch('/api/log/worked-dxcc', { signal });
+          if (!res.ok) return;
+          const j = (await res.json()) as { dxcc?: unknown };
+          if (!Array.isArray(j.dxcc)) return;
+          set({ dxcc: new Set(j.dxcc.filter((d): d is number => typeof d === 'number')) });
+        } catch {
+          /* transient */
+        }
+      })(),
+    ]);
   },
 }));
 

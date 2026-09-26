@@ -219,6 +219,13 @@ licences. The RNNoise `src/` is vendored unmodified except for the minimal
 `rnnoise_data.c` described above; per-file headers are preserved as received
 from upstream and must remain so on re-vendor.
 
+## AD1C country file (cty.csv)
+
+The DXCC prefix list in `Zeus.Server.Hosting/Dxcc/cty.csv` is Jim Reisert
+AD1C's country file from <https://www.country-files.com/>, used under its MIT
+licence (`Dxcc/LICENSE.cty`). Refresh it from the same site when entities or
+prefixes change.
+
 ## ft8_lib, KISS FFT and wsprd (ported to C#)
 
 The FT8/FT4 and WSPR modes run on managed C# ports of their reference C

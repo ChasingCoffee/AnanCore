@@ -14,7 +14,7 @@ function fetchOk(body: unknown) {
 
 describe('digital-worked-store', () => {
   beforeEach(() => {
-    useDigitalWorkedStore.setState({ calls: new Set<string>(), loaded: false });
+    useDigitalWorkedStore.setState({ calls: new Set<string>(), loaded: false, dxcc: null });
   });
 
   afterEach(() => {
@@ -30,6 +30,34 @@ describe('digital-worked-store', () => {
     expect(s.calls.has('G0XYZ')).toBe(true); // upper-cased
     expect(s.calls.has('W9XYZ')).toBe(true); // trimmed
     expect(s.calls.size).toBe(3);
+  });
+
+  it('fetches the worked DXCC entities beside the calls', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => ({
+        ok: true,
+        json: async () =>
+          url.includes('worked-dxcc') ? { dxcc: [281, 291, 'x'] } : { calls: ['K1ABC'] },
+      })) as never,
+    );
+    await useDigitalWorkedStore.getState().refresh();
+    const s = useDigitalWorkedStore.getState();
+    expect([...(s.dxcc ?? [])].sort()).toEqual([281, 291]);
+    expect(s.calls.has('K1ABC')).toBe(true);
+  });
+
+  it('gets the DXCC set even when the calls fetch fails', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.includes('worked-dxcc')
+          ? { ok: true, json: async () => ({ dxcc: [29] }) }
+          : { ok: false, status: 500 },
+      ) as never,
+    );
+    await useDigitalWorkedStore.getState().refresh();
+    expect(useDigitalWorkedStore.getState().dxcc?.has(29)).toBe(true);
   });
 
   it('keeps the last good set on a non-2xx response', async () => {

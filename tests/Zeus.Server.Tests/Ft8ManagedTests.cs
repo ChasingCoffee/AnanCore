@@ -211,4 +211,18 @@ public sealed class Ft8ManagedTests
             ("CQ POTA EA5HYW IM98", 2400f, t0 - 0.4f, 0.004f),
             ("TNX BOB 73 GL", 350f, t0 + 0.2f, 0.003f));
     }
+
+    // FT8 carries no country: the sender's DXCC entity comes from its callsign.
+    [Theory]
+    [InlineData("CQ EA8AR IL18", "Canary Islands", 29)]
+    [InlineData("EA5IUE PJ4/K1ABC R-12", "Bonaire", 520)]
+    [InlineData("K1ABC EA5IUE -10", "Spain", 281)]
+    [InlineData("<...> PD0OKP JO32", "Netherlands", 263)]
+    [InlineData("TNX BOB 73 GL", null, null)]
+    public void Decodes_CarryTheSendersDxccEntity(string text, string? country, int? dxcc)
+    {
+        var dto = Ft8Managed.ToDtos([new FtxDecode(-10, 0.5f, 1500f, 20, text)]).Single();
+        Assert.Equal(country, dto.Country);
+        Assert.Equal(dxcc, dto.Dxcc);
+    }
 }

@@ -38,6 +38,8 @@ export interface Ft8DecodeDto {
   /** Server-side enrichment: abbreviated DXCC entity derived from the sender's
    *  callsign prefix (FT8 never transmits country). null/absent when unknown. */
   country?: string | null;
+  /** ADIF DXCC entity number of the sender (server-side, from its callsign). */
+  dxcc?: number | null;
 }
 
 /** A completed slot's decodes for one receiver (the `ft8decode` payload). */
