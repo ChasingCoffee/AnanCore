@@ -11,10 +11,10 @@
 //   1/2  standard: two calls (optionally /R or /P) + grid, report or token
 //   4    one non-standard call sent in full + one hashed call
 //
-// This follows the C line for line, quirks included, because the golden
-// tests hold it to the native encoder's output (TestData/ft8). The known
-// quirks are listed in docs/designs/ft8-managed-port.md; fixing them is
-// separate work.
+// It was ported line for line and checked against the native encoder
+// (TestData/ft8/encoder-native.tsv). Since then ft8_lib's encoder quirks are
+// fixed (zeus-sk6o), so it now behaves like WSJT-X's pack77 where they
+// differed — see Encode() and docs/designs/ft8-managed-port.md.
 
 using System.Text;
 using static Zeus.Server.Hosting.Digital.Ft8.FtxText;
@@ -58,10 +58,25 @@ public static class FtxMessage
     // ---- encode -------------------------------------------------------------
 
     /// <summary>ftx_message_encode(): pack a message, trying a standard
-    /// message, then a non-standard-call one, then free text.</summary>
+    /// message, then a non-standard-call one, then free text.
+    ///
+    /// Differences from ft8_lib (zeus-sk6o), all towards WSJT-X:
+    ///   * the text is upper-cased and its spaces collapsed first (fmtmsg);
+    ///   * a token too long for a callsign (11) or the third field is refused,
+    ///     not silently truncated;
+    ///   * a third field that is not a grid, a report (-30..+49, optional R) or
+    ///     RRR/RR73/73 is not packed as "+00": the message falls back to free
+    ///     text (or is refused if it does not fit);
+    ///   * a callsign in &lt;brackets&gt; is sent as its hash, in a standard or a
+    ///     type-4 message;
+    ///   * an unbracketed non-standard call goes out in full as a type-4 message
+    ///     when one can carry the message (no grid or report); only otherwise
+    ///     is it hashed into a standard message, as ft8_lib always did — that is
+    ///     how "PJ4/K1ABC EA5IUE -10" reaches a station that knows its own call.
+    /// Order: standard, type 4, standard with hashed calls, free text.</summary>
     public static FtxMessageRc Encode(string text, IFtxCallsignHash? hash, Span<byte> payload)
     {
-        text = CStr(text);
+        text = Normalize(CStr(text));
         string callTo, callDe, extra;
 
         int pos = 0;
@@ -71,35 +86,97 @@ public static class FtxMessage
             pos = 3;
             // "CQ nnn" / "CQ a[bcd]" is one token; checked on the whole text, as the C does.
             if (ParseCqModifier(text) >= 0)
-                callTo = "CQ " + CopyToken(text, ref pos, 12 - 3);
+                callTo = "CQ " + CopyToken(text, ref pos, int.MaxValue);
             else
                 callTo = "CQ";
         }
         else
         {
-            callTo = CopyToken(text, ref pos, 12);
+            callTo = CopyToken(text, ref pos, int.MaxValue);
         }
-        callDe = CopyToken(text, ref pos, 12);
-        extra = CopyToken(text, ref pos, 20);
-        // The C's "token too long" checks can never fire: copy_token truncates.
+        callDe = CopyToken(text, ref pos, int.MaxValue);
+        extra = CopyToken(text, ref pos, int.MaxValue);
+        bool tooLong = callTo.Length > (isCq ? 11 + 3 : 11) || callDe.Length > 11 || extra.Length > 19;
 
         FtxMessageRc rc;
-        if (pos >= text.Length)
+        if (pos >= text.Length && !tooLong)
         {
-            rc = EncodeStd(callTo, callDe, extra, hash, payload);
+            rc = EncodeStd(callTo, callDe, extra, hash, payload, hashNonstandard: false);
             if (rc == FtxMessageRc.Ok) return rc;
             rc = EncodeNonstd(callTo, callDe, extra, hash, payload);
+            if (rc == FtxMessageRc.Ok) return rc;
+            rc = EncodeStd(callTo, callDe, extra, hash, payload, hashNonstandard: true);
             if (rc == FtxMessageRc.Ok) return rc;
         }
         return EncodeFree(text, payload);
     }
 
-    /// <summary>ftx_message_encode_std(): type 1 or 2.</summary>
-    internal static FtxMessageRc EncodeStd(string callTo, string callDe, string extra,
-                                           IFtxCallsignHash? hash, Span<byte> payload)
+    /// <summary>fmtmsg(), then trimmed: upper case, single spaces.</summary>
+    internal static string Normalize(string text)
     {
-        int n28a = Pack28(callTo, hash, out byte ipa);
-        int n28b = Pack28(callDe, hash, out byte ipb);
+        var sb = new StringBuilder(text.Length);
+        foreach (char ch in text)
+        {
+            char c = ch >= 'a' && ch <= 'z' ? (char)(ch - 'a' + 'A') : ch;
+            if (c == ' ' && (sb.Length == 0 || sb[^1] == ' ')) continue;
+            sb.Append(c);
+        }
+        return sb.ToString().TrimEnd(' ');
+    }
+
+    /// <summary>A third field a standard message can carry: nothing, a 4-char
+    /// grid, RRR / RR73 / 73, or a report -30..+49 with an optional R.</summary>
+    internal static bool IsStdExtra(string extra)
+    {
+        if (extra.Length == 0 || extra is "RRR" or "RR73" or "73") return true;
+        if (extra.Length == 4 && InRange(extra[0], 'A', 'R') && InRange(extra[1], 'A', 'R')
+            && IsDigit(extra[2]) && IsDigit(extra[3])) return true;
+        string r = extra.StartsWith('R') ? extra[1..] : extra;
+        if (r.Length is < 2 or > 3 || (r[0] != '+' && r[0] != '-')) return false;
+        for (int i = 1; i < r.Length; i++) if (!IsDigit(r[i])) return false;
+        int v = int.Parse(r[1..]) * (r[0] == '-' ? -1 : 1);
+        return v >= -30 && v <= 49;
+    }
+
+    /// <summary>A plausible callsign for a type-4 message: 3-11 of A-Z, 0-9
+    /// and '/', at least one letter and one digit, no leading or trailing '/'
+    /// — so "HELLO WORLD" is free text, not two hashed "calls".</summary>
+    private static bool LooksLikeCall(string call)
+    {
+        if (call.Length is < 3 or > 11 || call[0] == '/' || call[^1] == '/') return false;
+        bool letter = false, digit = false;
+        foreach (char c in call)
+        {
+            if (c >= 'A' && c <= 'Z') letter = true;
+            else if (c >= '0' && c <= '9') digit = true;
+            else if (c != '/') return false;
+        }
+        return letter && digit;
+    }
+
+    private static bool IsBracketed(string call) =>
+        call.Length > 2 && call[0] == '<' && call[^1] == '>';
+
+    /// <summary>True when the call packs as a standard base call (with an
+    /// optional /R or /P).</summary>
+    internal static bool IsStandardCall(string call)
+    {
+        int len = call.Length;
+        if (call.EndsWith("/P", StringComparison.Ordinal) || call.EndsWith("/R", StringComparison.Ordinal)) len -= 2;
+        return PackBasecall(call, len) >= 0;
+    }
+
+    /// <summary>ftx_message_encode_std(): type 1 or 2.</summary>
+    /// <param name="hashNonstandard">Also accept an unbracketed non-standard
+    /// call, sent as its 22-bit hash (ft8_lib's only behaviour).</param>
+    internal static FtxMessageRc EncodeStd(string callTo, string callDe, string extra,
+                                           IFtxCallsignHash? hash, Span<byte> payload,
+                                           bool hashNonstandard = true)
+    {
+        if (!IsStdExtra(extra)) return FtxMessageRc.ErrorGrid;
+
+        int n28a = Pack28(callTo, hash, out byte ipa, hashNonstandard);
+        int n28b = Pack28(callDe, hash, out byte ipb, hashNonstandard);
         if (n28a < 0) return FtxMessageRc.ErrorCallsign1;
         if (n28b < 0) return FtxMessageRc.ErrorCallsign2;
 
@@ -160,22 +237,34 @@ public static class FtxMessage
         string call58;
         if (!icq)
         {
-            // Which call goes in full (58 bits) and which as a 12-bit hash. The C
-            // indexes call_de with call_TO's length here; kept as the C.
-            iflip = 0;
-            if (At(callDe, 0) == '<' && At(callDe, lenCallTo - 1) == '>') iflip = 1;
+            // Type 4 carries RRR / RR73 / 73 or nothing — anything else would be
+            // dropped on the air.
+            if (extra.Length > 0 && extra is not ("RRR" or "RR73" or "73")) return FtxMessageRc.ErrorGrid;
+
+            // Which call goes in full (58 bits) and which as a 12-bit hash: the
+            // bracketed one is hashed; with no brackets, the non-standard one
+            // goes in full (iflip = 1 when that is the first call).
+            if (IsBracketed(callTo) && IsBracketed(callDe)) return FtxMessageRc.ErrorCallsign2;
+            if (IsBracketed(callDe)) iflip = 1;
+            else if (IsBracketed(callTo)) iflip = 0;
+            else iflip = !IsStandardCall(callTo) && IsStandardCall(callDe) ? (byte)1 : (byte)0;
 
             string call12 = iflip == 0 ? callTo : callDe;
             call58 = iflip == 0 ? callDe : callTo;
+            if (IsBracketed(call12)) call12 = call12[1..^1];
+            if (!LooksLikeCall(call12)) return FtxMessageRc.ErrorCallsign1;
             if (!SaveCallsign(hash, call12, out uint n22)) return FtxMessageRc.ErrorCallsign1;
             n12 = (ushort)(n22 >> 10);
         }
         else
         {
+            // A CQ with a non-standard call has no room for a grid: it is sent
+            // without one, as WSJT-X does ("CQ PJ4/K1ABC").
             iflip = 0;
             n12 = 0;
             call58 = callDe;
         }
+        if (IsBracketed(call58) || !LooksLikeCall(call58)) return FtxMessageRc.ErrorCallsign2;
 
         if (!Pack58(hash, call58, out ulong n58)) return FtxMessageRc.ErrorCallsign2;
 
@@ -482,7 +571,7 @@ public static class FtxMessage
 
     /// <summary>pack28(): a token, a 22-bit hash or a base call as a 28-bit
     /// number (-1 on error); <paramref name="ip"/> is the /R or /P flag.</summary>
-    internal static int Pack28(string callsign, IFtxCallsignHash? hash, out byte ip)
+    internal static int Pack28(string callsign, IFtxCallsignHash? hash, out byte ip, bool hashNonstandard = true)
     {
         ip = 0;
         if (callsign == "DE") return 0;
@@ -510,9 +599,14 @@ public static class FtxMessage
             return (int)(NTokens + Max22 + (uint)n28);
         }
 
-        if (length >= 3 && length <= 11)
+        // A <bracketed> call travels as its 22-bit hash. So may an unbracketed
+        // non-standard one when the caller allows it (the last resort before
+        // free text — a type-4 message, sending it in full, is tried first).
+        string inner = IsBracketed(callsign) ? callsign[1..^1]
+            : hashNonstandard && LooksLikeCall(callsign) ? callsign : "";
+        if (inner.Length >= 3 && inner.Length <= 11)
         {
-            if (!SaveCallsign(hash, callsign, out uint n22)) return -1;
+            if (!SaveCallsign(hash, inner, out uint n22)) return -1;
             ip = 0;
             return (int)(NTokens + n22);
         }

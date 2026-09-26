@@ -39,6 +39,10 @@ public sealed class Ft8ManagedTests
     [MemberData(nameof(EncoderVectors))]
     public void Encoder_MatchesNative(string message, int rc, string payload, string ft8Tones, string ft4Tones)
     {
+        // ft8_lib's quirks were fixed on purpose after the port (zeus-sk6o);
+        // those messages have their own expectations below.
+        if (FixedQuirks.Any(q => (string)q[0] == message)) return;
+
         var p = new byte[FtxMessage.PayloadBytes];
         Assert.Equal(rc, (int)FtxMessage.Encode(message, null, p));
         if (rc != 0) return;
@@ -52,6 +56,82 @@ public sealed class Ft8ManagedTests
         var t4 = new byte[FtxConstants.Ft4Nn];
         FtxEncoder.Ft4Tones(p, t4);
         Assert.Equal(ft4Tones, Digits(t4));
+    }
+
+    /// <summary>Messages the native encoder got wrong (zeus-sk6o), with what
+    /// the far end now reads — null when the message is refused. The comment
+    /// says what ft8_lib sent instead.</summary>
+    public static TheoryData<string, string?> FixedQuirks => new()
+    {
+        // An unrecognised third field became a report of +00 (or worse).
+        { "K1ABC W9XYZ HELLO", null },                  // was K1ABC W9XYZ +00
+        { "K1ABC W9XYZ AA", null },                     // was +00
+        { "K1ABC W9XYZ FN4", null },                    // was +00
+        { "K1ABC W9XYZ SS99", null },                   // was +00 (S is not a grid letter)
+        { "K1ABC W9XYZ R-", null },                     // was R+00
+        { "K1ABC W9XYZ -99", null },                    // was "K1ABC W9XYZ RR36"
+        { "K1ABC W9XYZ R-99", null },                   // was "K1ABC W9XYZ R RR36"
+        { "K1ABC W9XYZ +99", null },                    // beyond +49
+        { "K1ABC W9XYZ R+50", null },                   // beyond +49
+        { "K1ABC W9XYZ ABCDEFGHIJKLMNOPQRSTUV", null }, // was +00, token truncated
+        // Short enough for free text, which is what was typed.
+        { "K1ABC W9XYZ R", "K1ABC W9XYZ R" },           // was R+00
+        { "K1ABC W9XYZ -", "K1ABC W9XYZ -" },           // was +00
+        { "K1ABC W9XYZ +", "K1ABC W9XYZ +" },           // was +00
+        { "K1ABC W9XYZ 5", "K1ABC W9XYZ 5" },           // was +05: a report needs its sign
+        { "HELLO WORLD", "HELLO WORLD" },               // was "<...> <...>"
+        // Bracketed (hashed) calls could not be encoded at all.
+        { "<W9XYZ> PJ4/K1ABC RR73", "<...> PJ4/K1ABC RR73" },
+        { "<W9XYZ> PJ4/K1ABC RRR", "<...> PJ4/K1ABC RRR" },
+        { "<W9XYZ> PJ4/K1ABC 73", "<...> PJ4/K1ABC 73" },
+        { "<W9XYZ> PJ4/K1ABC", "<...> PJ4/K1ABC" },
+        { "PJ4/K1ABC <W9XYZ> RR73", "PJ4/K1ABC <...> RR73" },
+        // A non-standard call now goes in full (type 4) when it can.
+        { "E7/K1ABC W9XYZ", "E7/K1ABC <...>" },         // was "<...> W9XYZ"
+        { "K1ABC PJ4/W9XYZ", "<...> PJ4/W9XYZ" },       // was "K1ABC <...>"
+        // Mixed /R and /P cannot be sent; ft8_lib sent something else.
+        { "K1ABC/R W9XYZ/P EN37", null },               // was "<...> W9XYZ/P"
+        { "K1ABC/P W9XYZ/R EN37", null },               // was "<...> W9XYZ/R"
+        { "K1ABCDEFGHIJKL W9XYZ EN37", null },          // was "<...> W9XYZ EN37", call truncated
+        // Case and spacing are normalised, as WSJT-X does.
+        { "cq k1abc fn42", "CQ K1ABC FN42" },           // was refused
+        { " K1ABC W9XYZ EN37", "K1ABC W9XYZ EN37" },    // was refused
+        { "CQ  K1ABC FN42", "CQ K1ABC FN42" },          // was "CQ  K1ABC FN42" (an empty CQ modifier)
+    };
+
+    [Theory]
+    [MemberData(nameof(FixedQuirks))]
+    public void Encoder_FixedQuirks(string message, string? readsAs)
+    {
+        var p = new byte[FtxMessage.PayloadBytes];
+        var rc = FtxMessage.Encode(message, null, p);
+        if (readsAs is null)
+        {
+            Assert.NotEqual(FtxMessageRc.Ok, rc);
+            return;
+        }
+        Assert.Equal(FtxMessageRc.Ok, rc);
+        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Decode(p, null, out string text));
+        Assert.Equal(readsAs, text);
+    }
+
+    // The QSO messages the sequencer builds for a compound call still go out as
+    // before: the compound call hashed into a standard message, which the far
+    // end resolves because its own call is in its table.
+    [Theory]
+    [InlineData("PJ4/K1ABC EA5IUE -10", "<PJ4/K1ABC> EA5IUE -10")]
+    [InlineData("EA5IUE PJ4/K1ABC R-12", "EA5IUE <PJ4/K1ABC> R-12")]
+    [InlineData("EA5IUE/QRP K1ABC -10", "<EA5IUE/QRP> K1ABC -10")]
+    public void CompoundCallReports_ResolveAtAStationThatKnowsTheCall(string message, string readsAs)
+    {
+        var p = new byte[FtxMessage.PayloadBytes];
+        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Encode(message, null, p));
+        Assert.Equal(1, (p[9] >> 3) & 7);                          // a standard message
+        var table = new FtxCallsignTable();
+        string compound = message.Split(' ').First(c => c.Contains('/'));
+        FtxMessage.SaveCallsign(table, compound, out _);              // the far end knows it
+        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Decode(p, table, out string text));
+        Assert.Equal(readsAs, text);
     }
 
     [Fact]
@@ -94,17 +174,17 @@ public sealed class Ft8ManagedTests
         var table = new FtxCallsignTable();
         var p = new byte[FtxMessage.PayloadBytes];
 
-        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Encode("K1ABC PJ4/W9XYZ", null, p));
+        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Encode("K1ABC <PJ4/W9XYZ> -10", null, p));
         Assert.Equal(FtxMessageRc.Ok, FtxMessage.Decode(p, table, out string before));
-        Assert.Equal("K1ABC <...>", before);
+        Assert.Equal("K1ABC <...> -10", before);
 
         Assert.Equal(FtxMessageRc.Ok, FtxMessage.Encode("CQ PJ4/W9XYZ", null, p));
         Assert.Equal(FtxMessageRc.Ok, FtxMessage.Decode(p, table, out string cq));
         Assert.Equal("CQ PJ4/W9XYZ", cq);
 
-        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Encode("K1ABC PJ4/W9XYZ", null, p));
+        Assert.Equal(FtxMessageRc.Ok, FtxMessage.Encode("K1ABC <PJ4/W9XYZ> -10", null, p));
         Assert.Equal(FtxMessageRc.Ok, FtxMessage.Decode(p, table, out string after));
-        Assert.Equal("K1ABC <PJ4/W9XYZ>", after);
+        Assert.Equal("K1ABC <PJ4/W9XYZ> -10", after);
     }
 
     [Fact]
@@ -188,11 +268,11 @@ public sealed class Ft8ManagedTests
         var managed = Ft8Managed.ToDtos(FtxDecoder.Decode(audio, 48000, isFt4, null)).Select(Ft8GoldenTests.Line).ToList();
 
         string prefix = $"{(isFt4 ? "FT4" : "FT8")}\t{seed}\t";
-        var native = File.ReadAllLines(TestData("synthetic-native.tsv"))
+        var native = Ft8GoldenTests.FirstOfEachText(File.ReadAllLines(TestData("synthetic-native.tsv"))
             .Where(l => l.StartsWith(prefix, StringComparison.Ordinal))
-            .Select(l => l[prefix.Length..]).ToList();
+            .Select(l => l[prefix.Length..]));
 
-        Assert.True(native.Count >= 4);
+        Assert.True(native.Count >= 3);
         Assert.Equal(native, managed);
     }
 

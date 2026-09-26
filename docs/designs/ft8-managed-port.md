@@ -96,6 +96,13 @@ and must be exact.
 
 ## Encoder quirks found so far (reproduced first, fixed later)
 
+**Fixed (zeus-sk6o).** With native gone, these now behave like WSJT-X's
+pack77, and the decoder keeps one copy of each message text. What each quirk
+used to send is recorded beside its test (`Ft8ManagedTests.FixedQuirks`). One
+ft8_lib behaviour is deliberately kept: a compound call with a report or grid
+(`PJ4/K1ABC EA5IUE -10`) is still hashed into a standard message, because a
+type-4 message cannot carry the report and the far end resolves its own call.
+
 - `copy_token` never reports an over-long token. It truncates to the buffer
   (11 chars for a call, 19 for the third field), so the "token too long"
   checks in `ftx_message_encode` never fire.
