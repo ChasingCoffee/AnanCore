@@ -18,36 +18,36 @@ function findButton(container: HTMLElement, label: string): HTMLButtonElement | 
 describe('SpectrumControls', () => {
   afterEach(() => {
     act(() => {
-      usePanadapterRenderStore.setState({ panadapter3dEnabled: true });
+      usePanadapterRenderStore.setState({ panadapter3dEnabled: false });
     });
     localStorage.clear();
     vi.restoreAllMocks();
   });
 
-  it('toggles the panadapter between 3D and legacy 2D beside Pop', () => {
+  it('toggles the panadapter between legacy 2D (the default) and 3D beside Pop', () => {
     const { container, unmount } = render(createElement(SpectrumControls));
 
-    const enabled = findButton(container, '3D');
-    expect(enabled).not.toBeNull();
-    expect(enabled!.getAttribute('aria-pressed')).toBe('true');
+    const off = findButton(container, '2D');
+    expect(off).not.toBeNull();
+    expect(off!.getAttribute('aria-pressed')).toBe('false');
 
     act(() => {
-      enabled!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      off!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    const disabled = findButton(container, '2D');
-    expect(disabled).not.toBeNull();
-    expect(disabled!.getAttribute('aria-pressed')).toBe('false');
-    expect(localStorage.getItem('zeus.panadapter.webgpu3d')).toBe('0');
-
-    act(() => {
-      disabled!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    const reenabled = findButton(container, '3D');
-    expect(reenabled).not.toBeNull();
-    expect(reenabled!.getAttribute('aria-pressed')).toBe('true');
+    const on = findButton(container, '3D');
+    expect(on).not.toBeNull();
+    expect(on!.getAttribute('aria-pressed')).toBe('true');
     expect(localStorage.getItem('zeus.panadapter.webgpu3d')).toBe('1');
+
+    act(() => {
+      on!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const offAgain = findButton(container, '2D');
+    expect(offAgain).not.toBeNull();
+    expect(offAgain!.getAttribute('aria-pressed')).toBe('false');
+    expect(localStorage.getItem('zeus.panadapter.webgpu3d')).toBe('0');
     unmount();
   });
 });

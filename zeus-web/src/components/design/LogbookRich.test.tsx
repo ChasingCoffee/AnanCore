@@ -91,7 +91,8 @@ describe('LogbookDashboard', () => {
       createElement(LogbookDashboard, { entries, totalCount: 1248, fullyLoaded: true }),
     );
     const text = container.textContent ?? '';
-    expect(text).toContain('1,248'); // headline total from totalCount, not the loaded slice
+    // Formatted in the host locale ("1,248" en-US, "1248" es-ES).
+    expect(text).toContain((1248).toLocaleString()); // headline total from totalCount, not the loaded slice
     expect(text).toContain('Total QSOs');
     expect(text).toContain('Bands');
     expect(text).toContain('Modes');

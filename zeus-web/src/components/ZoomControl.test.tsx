@@ -123,7 +123,7 @@ describe('ZoomControl', () => {
     });
 
     expect(setRadioLoMock).toHaveBeenCalledWith(14_205_000, undefined);
-    expect(setZoomMock).toHaveBeenCalledWith(5, expect.any(AbortSignal));
+    expect(setZoomMock).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal));
     expect(useConnectionStore.getState().radioLoHz).toBe(14_205_000);
     expect(viewCenter.viewCenterFor('A').getTargetCenterHz()).toBe(14_205_000);
 
