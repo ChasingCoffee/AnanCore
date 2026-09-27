@@ -142,7 +142,7 @@ describe('QrzAccessGate', () => {
     });
 
     expect(container.textContent).toContain('QRZ Account Active');
-    expect(container.textContent).toContain('N9WAR is the Zeus username.');
+    expect(container.textContent).toContain('N9WAR is the ANAN Core username.');
     expect(container.textContent).toContain('REFRESH ACCESS');
     expect(container.textContent).toContain('SIGN OUT');
     expect(container.querySelector('input[type="password"]')).toBeNull();

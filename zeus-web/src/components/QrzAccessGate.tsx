@@ -89,7 +89,7 @@ export function QrzAccessGate({ adminMode = false }: { adminMode?: boolean }) {
     ? adminMode ? 'Admin QRZ Session' : 'QRZ Account Active'
     : adminMode ? 'Admin QRZ Login' : 'QRZ Login Required';
   const subtitle = qrzSignedIn
-    ? `${qrzUsername} is the Zeus username.`
+    ? `${qrzUsername} is the ANAN Core username.`
     : 'QRZ callsign is the ANAN Core username.';
 
   return (
