@@ -148,6 +148,19 @@ async function stubZeusApi(page: Page) {
       return;
     }
 
+    // A Windows install has no AppImage to swap: the server refuses the
+    // in-place apply as 'unsupported' (RepoUpdateService.Apply.cs).
+    if (url.pathname === '/api/system/update/apply') {
+      const unsupported = {
+        phase: 'unsupported',
+        percent: 0,
+        targetVersion: null,
+        error: 'no AppImage found to update',
+      };
+      await fulfillJson(route, method === 'POST' ? { ok: false, status: unsupported } : unsupported);
+      return;
+    }
+
     if (url.pathname === '/api/capabilities') {
       await fulfillJson(route, {
         host: 'server',
@@ -220,10 +233,18 @@ test('packaged startup update opens Settings and the selected release asset', as
   await expect(page.getByText('Version 0.9.2 available')).toBeVisible();
   await expect(page.getByText('OpenHPSDR-Zeus-v0.9.2-win-x64-setup.exe')).toBeVisible();
 
-  // What the action button does with an asset (in-place install vs opening
-  // the download) is platform-specific and tracked separately; this flow
-  // stops at the offer.
-  await expect(page.getByRole('button', { name: 'INSTALL & RESTART' })).toBeEnabled();
+  // No in-place apply on Windows: the button falls back to opening the
+  // selected installer, as the startup toast does.
+  await page.getByRole('button', { name: 'INSTALL & RESTART' }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        ((window as unknown as { __zeusOpenedUrls: string[] }).__zeusOpenedUrls),
+      ),
+    )
+    .toEqual([downloadUrl]);
+  await expect(page.getByText('Opened OpenHPSDR-Zeus-v0.9.2-win-x64-setup.exe.')).toBeVisible();
 
   expect(pageErrors).toEqual([]);
 });

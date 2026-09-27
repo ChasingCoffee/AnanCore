@@ -63,6 +63,18 @@ function openExternal(url: string | null | undefined) {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+/** Open the release download (or the downloads page) for `status` and return
+ *  the line to show the operator. */
+function openDownload(status: RepoUpdateStatus): string {
+  const url = status.releaseDownloadUrl ?? status.releaseUrl;
+  openExternal(url);
+  return url
+    ? status.releaseDownloadUrl
+      ? `Opened ${status.releaseAssetName ?? 'the latest ANAN Core download'}.`
+      : 'Opened the ANAN Core downloads page.'
+    : 'No download is available for this platform.';
+}
+
 function statusLabel(status: RepoUpdateStatus): string {
   if (status.forceUpdate) {
     return 'Update required';
@@ -153,6 +165,13 @@ export function UpdatesPanel() {
         setApply(st);
         if (!ok) {
           setApplying(false);
+          // In-place apply only swaps an AppImage. Anywhere else (Windows
+          // setup.exe, macOS pkg, tarball) fall back to opening the download,
+          // as the startup toast does, instead of a button that never works.
+          if (st.phase === 'unsupported' && fresh) {
+            setResult(openDownload(fresh));
+            return;
+          }
           setResult(st.error ?? 'In-place update is not available on this install.');
           return;
         }
@@ -215,15 +234,7 @@ export function UpdatesPanel() {
 
   const doUpdate = () => {
     if (!status) return;
-    const url = status.releaseDownloadUrl ?? status.releaseUrl;
-    openExternal(url);
-    setResult(
-      url
-        ? status.releaseDownloadUrl
-          ? `Opened ${status.releaseAssetName ?? 'the latest ANAN Core download'}.`
-          : 'Opened the ANAN Core downloads page.'
-        : 'No download is available for this platform.',
-    );
+    setResult(openDownload(status));
   };
 
   const action = status?.updateAction ?? 'none';
