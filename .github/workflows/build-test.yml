@@ -17,11 +17,11 @@ jobs:
       # runner has no cached wisdom, so each bake takes minutes. FFT plans are
       # built on demand instead (see WdspWisdomInitializer.SkipEnvironmentVariable).
       ZEUS_WISDOM_SKIP: '1'
-    # continue-on-error is driven per-leg from the matrix. Legs whose runner
-    # availability for THIS repo is not yet confirmed (native arm64, Intel
-    # macOS) are marked experimental so an infra gap does not turn the whole
-    # required check red. Promote them to hard gates (drop `experimental`)
-    # once a green run on real hardware confirms the runner label resolves.
+    # continue-on-error is driven per-leg from the matrix. A new leg whose
+    # runner availability for THIS repo is not yet confirmed can be added with
+    # `experimental: true` so an infra gap does not turn the whole check red;
+    # drop the flag once a green run confirms the runner label resolves.
+    # Every current leg is a hard gate.
     continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       # fail-fast: false so one architecture failing still reports the others.
@@ -42,28 +42,23 @@ jobs:
             os: macos-latest
             arch: arm64
 
-          # ---- arm64 .NET test legs (NEW) --------------------------------
-          # GitHub's native arm64 runners are GA for public repos:
-          #   ubuntu-24.04-arm  -> Linux arm64 (covers Raspberry Pi class ABI)
-          #   windows-11-arm    -> Windows arm64
-          # We run `dotnet test` natively here rather than QEMU so the DSP /
-          # native-load path is exercised on real arm64 silicon. QEMU was
-          # rejected: it cannot validate the WDSP native .so/.dll load reliably
+          # ---- linux-arm64 (required) -------------------------------------
+          # The Raspberry Pi 5 platform: the shipped linux-aarch64 AppImages
+          # are built on this same runner label (release-appimage.yml). We run
+          # `dotnet test` natively on ubuntu-24.04-arm rather than QEMU so the
+          # DSP / native-load path is exercised on real arm64 silicon. QEMU was
+          # rejected: it cannot validate the WDSP native .so load reliably
           # (emulated syscalls + missing arm64 native runtimes) and is far
-          # slower. If a native arm runner label is ever disabled for this repo
-          # these legs will fail to schedule — that is why they are flagged
-          # experimental below until a maintainer confirms a green run.
-          # TODO(maintainer): drop `experimental: true` on these two legs once
-          # a run on the real arm64 runners is confirmed green; then they
-          # become required, satisfying the "green on every arch" rule.
+          # slower. Promoted from experimental after its first green run on
+          # freedv-in-core (PR #54).
           - name: linux-arm64
             os: ubuntu-24.04-arm
             arch: arm64
-            experimental: true
-          - name: windows-arm64
-            os: windows-11-arm
-            arch: arm64
-            experimental: true
+
+          # ---- Windows arm64 — RETIRED ------------------------------------
+          # Releases do not ship Windows arm64 (release-windows.yml builds
+          # win-x64 only), so the windows-11-arm leg only burned ~20 min of
+          # runner time per run for a platform nobody installs.
 
           # ---- macOS x64 (Intel) coverage — RETIRED ----------------------
           # The macos-x64 leg ran on `macos-13`, GitHub's last Intel hosted
