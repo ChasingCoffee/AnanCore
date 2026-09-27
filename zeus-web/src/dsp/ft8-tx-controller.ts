@@ -146,8 +146,10 @@ export class Ft8TxController {
    * CALL-1ST auto-answer can reply in the opposite slot). Applies the
    * sequencer's decision: stages the next message (only while armed), logs once,
    * and disarms/halts as the machine dictates. Pure decision in, POSTs out.
+   * `lastTx` is the message the keyer last put on the air (its TX echo), so a
+   * terminal 73 / RR73 ends the QSO only once it has actually gone out.
    */
-  onWindow(decoded: string[], measuredSnrOfDx?: number, senderSlot?: Slot): void {
+  onWindow(decoded: string[], measuredSnrOfDx?: number, senderSlot?: Slot, lastTx?: string | null): void {
     // MANUAL MODE (auto-sequence off): keep the operator's currently-selected
     // message going while armed, but never advance the QSO, auto-answer, log, or
     // disarm on our own — every step is an explicit operator action.
@@ -180,10 +182,10 @@ export class Ft8TxController {
       }
     }
 
-    const res =
-      measuredSnrOfDx === undefined
-        ? step(this.state, decoded)
-        : step(this.state, decoded, { measuredSnrOfDx });
+    const res = step(this.state, decoded, {
+      ...(measuredSnrOfDx !== undefined && { measuredSnrOfDx }),
+      ...(lastTx !== undefined && { lastTx }),
+    });
     this.state = res.next;
 
     if (res.outgoing != null && this.state.enableTx) {

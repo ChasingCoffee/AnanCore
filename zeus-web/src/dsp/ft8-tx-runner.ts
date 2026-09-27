@@ -321,7 +321,10 @@ export function useFt8TxRunner(opts: UseFt8TxRunnerOpts): Ft8TxRunnerView {
         // Thread the measured SNR of the DX station so the report we send (and
         // log) is the real exchange, not a constant fallback.
         const measured = measuredDxSnr(rows, ctrl.getState());
-        ctrl.onWindow(rows.map((r) => r.text), measured, senderSlot);
+        // What the keyer really keyed last, so a terminal 73 / RR73 staged
+        // too late for its slot is not taken as sent (zeus-g59v).
+        const lastTx = useFt8TxStore.getState().txEcho[0]?.message ?? null;
+        ctrl.onWindow(rows.map((r) => r.text), measured, senderSlot, lastTx);
         sync();
       },
     });

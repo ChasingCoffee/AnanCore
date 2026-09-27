@@ -321,7 +321,7 @@ function rankOf(role: Role, p: QsoProgress): number {
  * a future change to the logging policy (e.g. logging on RRR send) must not silently
  * make this fire for RRR and cut the caller off before the partner's 73.
  */
-function callerTerminalDisarm(state: QsoState): StepResult | null {
+function callerTerminalDisarm(state: QsoState, opts: StepOpts): StepResult | null {
   if (
     state.role !== 'cq-caller' ||
     state.progress !== 'rogers' ||
@@ -331,7 +331,7 @@ function callerTerminalDisarm(state: QsoState): StepResult | null {
   ) {
     return null;
   }
-  return {
+  return terminalNotYetSent(state, opts) ?? {
     next: { ...state, progress: 'done', enableTx: false },
     outgoing: null,
     logQso: false,
@@ -340,9 +340,51 @@ function callerTerminalDisarm(state: QsoState): StepResult | null {
   };
 }
 
+/**
+ * Windows a terminal one-shot (our 73, the caller's RR73) may wait for the keyer
+ * to report it on the air before the QSO ends anyway: two of our own slots.
+ */
+export const TERMINAL_MAX_WAIT_WINDOWS = 4;
+
+/**
+ * Keep a terminal one-shot staged until the keyer has actually transmitted it.
+ *
+ * The one-shot branches used to assume the terminal message went out in the
+ * slot right after it was staged. When the decode batch that triggered it
+ * lands after the keyer's commit point (Ft8KeyerService.StageCommitMs — a slow
+ * host, or a busy slot on a Pi), the keyer repeats the previous message
+ * instead and the terminal one goes out a slot later; ending the QSO on the
+ * next window disarmed the keyer before it ever did (zeus-g59v: 73 never sent).
+ *
+ * Returns the "keep sending it" result while `opts.lastTx` shows another
+ * message, or null when it has gone out, when the caller gave no `lastTx`
+ * (legacy one-shot), or after {@link TERMINAL_MAX_WAIT_WINDOWS}.
+ */
+function terminalNotYetSent(state: QsoState, opts: StepOpts): StepResult | null {
+  const msg = currentOutgoing(state);
+  if (opts.lastTx === undefined || msg == null) return null;
+  if (sameMessage(opts.lastTx, msg)) return null;
+  if (state.noReplyCount >= TERMINAL_MAX_WAIT_WINDOWS) return null;
+  return {
+    next: { ...state, noReplyCount: state.noReplyCount + 1 },
+    outgoing: msg,
+    logQso: false,
+    disarmTx: false,
+    halt: null,
+  };
+}
+
+const sameMessage = (a: string | null, b: string): boolean =>
+  a != null && a.trim().toUpperCase() === b.trim().toUpperCase();
+
 export interface StepOpts {
   /** SNR (dB) we measured of the DX station this window, for report messages. */
   measuredSnrOfDx?: number;
+  /** The message the keyer most recently put on the air (the TX echo), or null
+   *  when it has sent nothing yet. When given, a terminal one-shot (our 73, the
+   *  caller's RR73) only ends the QSO once it matches — see terminalNotYetSent.
+   *  Omitted = the legacy assumption that a staged message went out next slot. */
+  lastTx?: string | null;
 }
 
 /**
@@ -361,11 +403,11 @@ export function step(state: QsoState, decoded: string[], opts: StepOpts = {}): S
   if (state.progress === 'done') return { ...noChange(), disarmTx: true };
   if (!state.enableTx) return noChange();
 
-  // Signoff is a one-shot: once we've queued/sent our 73, the QSO is over.
+  // Signoff is a one-shot: once our 73 has gone out, the QSO is over.
   // (Re-CQ after a caller's Done is left to an explicit operator action — the
   // engine never auto-re-arms transmit.)
   if (state.progress === 'signoff') {
-    return {
+    return terminalNotYetSent(state, opts) ?? {
       next: { ...state, progress: 'done', enableTx: false },
       outgoing: null,
       logQso: false,
@@ -416,7 +458,7 @@ export function step(state: QsoState, decoded: string[], opts: StepOpts = {}): S
   if (!bestMsg) {
     // CQ-caller terminal: RR73 already sent + logged, "Disable Tx after 73" on →
     // disarm cleanly instead of re-sending RR73 (or counting toward no-reply).
-    const term = callerTerminalDisarm(state);
+    const term = callerTerminalDisarm(state, opts);
     if (term) return term;
     // No advancing reply — re-queue current message, count the miss.
     const noReplyCount = state.noReplyCount + 1;
@@ -497,7 +539,7 @@ function applyEvent(state: QsoState, m: Ft8Message, opts: StepOpts): StepResult 
 
   // Event didn't advance us (e.g. he repeated an earlier slot): re-send current —
   // unless the caller's terminal RR73 is done (sent + logged, disable-after-73).
-  const term = callerTerminalDisarm(state);
+  const term = callerTerminalDisarm(state, opts);
   if (term) return term;
   return {
     next: { ...state, noReplyCount: state.noReplyCount + 1 },

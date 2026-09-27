@@ -12,6 +12,7 @@ import {
   slotOf,
   startCq,
   step,
+  TERMINAL_MAX_WAIT_WINDOWS,
   type QsoState,
 } from './ft8-sequencer';
 
@@ -206,6 +207,79 @@ describe('caller terminal RR73 — Disable Tx after sending 73', () => {
     r = step(s, []);
     expect(r.outgoing).toBe('G0XYZ K1ABC RR73');
     expect(r.disarmTx).toBe(false);
+  });
+});
+
+describe('terminal one-shots end the QSO only once the keyer sent them (zeus-g59v)', () => {
+  /** An answerer that just heard RR73 and staged its 73. */
+  function toSignoff(): QsoState {
+    let s = arm(answerCq({ myCall: 'G0XYZ', myGrid4: 'IO91' }, parseFt8Message('CQ K1ABC FN42'), 'even')!);
+    s = step(s, ['G0XYZ K1ABC -19'], { measuredSnrOfDx: -22 }).next;
+    const r = step(s, ['G0XYZ K1ABC RR73'], { lastTx: 'K1ABC G0XYZ R-22' });
+    expect(r.next.progress).toBe('signoff');
+    expect(r.outgoing).toBe('K1ABC G0XYZ 73');
+    return r.next;
+  }
+
+  it('keeps the 73 staged while the keyer repeated R-report (RR73 landed past the commit point)', () => {
+    let s = toSignoff();
+    // Our slot went out as R-22 again: the 73 has not been sent yet.
+    let r = step(s, [], { lastTx: 'K1ABC G0XYZ R-22' });
+    expect(r.next.progress).toBe('signoff');
+    expect(r.outgoing).toBe('K1ABC G0XYZ 73');
+    expect(r.disarmTx).toBe(false);
+    expect(r.logQso).toBe(false);
+    s = r.next;
+    // His slot: nothing new, still waiting for our slot.
+    r = step(s, [], { lastTx: 'K1ABC G0XYZ R-22' });
+    expect(r.next.progress).toBe('signoff');
+    expect(r.outgoing).toBe('K1ABC G0XYZ 73');
+    s = r.next;
+    // The keyer sent the 73: now the QSO is over.
+    r = step(s, [], { lastTx: 'K1ABC G0XYZ 73' });
+    expect(r.next.progress).toBe('done');
+    expect(r.disarmTx).toBe(true);
+    expect(r.outgoing).toBeNull();
+    expect(r.logQso).toBe(false);
+  });
+
+  it('ends at once when the 73 went out in the next slot, as before', () => {
+    const r = step(toSignoff(), [], { lastTx: 'K1ABC G0XYZ 73' });
+    expect(r.next.progress).toBe('done');
+    expect(r.disarmTx).toBe(true);
+  });
+
+  it('gives up waiting after TERMINAL_MAX_WAIT_WINDOWS windows', () => {
+    let s = toSignoff();
+    for (let i = 0; i < TERMINAL_MAX_WAIT_WINDOWS; i++) {
+      const r = step(s, [], { lastTx: 'K1ABC G0XYZ R-22' });
+      expect(r.next.progress).toBe('signoff');
+      s = r.next;
+    }
+    const r = step(s, [], { lastTx: 'K1ABC G0XYZ R-22' });
+    expect(r.next.progress).toBe('done');
+    expect(r.disarmTx).toBe(true);
+  });
+
+  it('a clicked RR73 waits for its 73 even when the keyer has sent nothing yet', () => {
+    const s = arm(engage({ myCall: 'G0XYZ', myGrid4: 'IO91' }, parseFt8Message('G0XYZ K1ABC RR73', 'G0XYZ'), 'even')!);
+    const r = step(s, [], { lastTx: null });
+    expect(r.next.progress).toBe('signoff');
+    expect(r.outgoing).toBe('K1ABC G0XYZ 73');
+  });
+
+  it("keeps the caller's RR73 staged while the keyer repeated the report", () => {
+    let s = arm(startCq({ myCall: 'K1ABC', myGrid4: 'FN42', txAck: 'RR73' }));
+    s = step(s, ['K1ABC G0XYZ IO91'], { measuredSnrOfDx: -19 }).next;
+    s = step(s, ['K1ABC G0XYZ R-22'], { lastTx: 'G0XYZ K1ABC -19' }).next; // -> rogers, logged
+    let r = step(s, [], { lastTx: 'G0XYZ K1ABC -19' });
+    expect(r.next.progress).toBe('rogers');
+    expect(r.outgoing).toBe('G0XYZ K1ABC RR73');
+    expect(r.disarmTx).toBe(false);
+    r = step(r.next, [], { lastTx: 'G0XYZ K1ABC RR73' });
+    expect(r.next.progress).toBe('done');
+    expect(r.disarmTx).toBe(true);
+    expect(r.logQso).toBe(false);
   });
 });
 
