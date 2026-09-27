@@ -1,22 +1,22 @@
 name: Build and Test
 
 on:
-  # freedv-in-core, this repository's default branch, is deliberately NOT
-  # here. Adding it turns every push and every PR red on the Lint frontend
-  # step: fourteen react-hooks/rules-of-hooks errors that predate any of this
-  # — a plain function named useBank that the rule takes for a hook. Until
-  # those are dealt with, switching the workflow on just trains people to
-  # ignore a red tick. Run it by hand from the Actions tab in the meantime.
   push:
-    branches: [main, develop, experimental]
+    branches: [freedv-in-core, main, develop, experimental]
   pull_request:
-    branches: [main, develop, experimental]
+    branches: [freedv-in-core, main, develop, experimental]
   workflow_dispatch:
 
 jobs:
   build-and-test:
     name: Build and Test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    env:
+      # Skip the WDSP FFTW wisdom bake (FFTW_PATIENT, sizes 64..262144). Every
+      # test host that boots the app starts WisdomBootstrapService, and a clean
+      # runner has no cached wisdom, so each bake takes minutes. FFT plans are
+      # built on demand instead (see WdspWisdomInitializer.SkipEnvironmentVariable).
+      ZEUS_WISDOM_SKIP: '1'
     # continue-on-error is driven per-leg from the matrix. Legs whose runner
     # availability for THIS repo is not yet confirmed (native arm64, Intel
     # macOS) are marked experimental so an infra gap does not turn the whole

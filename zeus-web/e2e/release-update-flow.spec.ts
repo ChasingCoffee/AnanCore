@@ -209,7 +209,7 @@ test('packaged startup update opens Settings and the selected release asset', as
   await page.goto('/');
 
   await expect(page.getByText('UPDATE AVAILABLE')).toBeVisible();
-  await expect(page.getByText('Zeus 0.9.2 is ready')).toBeVisible();
+  await expect(page.getByText('ANAN Core 0.9.2 is ready')).toBeVisible();
   await expect(page.getByText(/Installed 0\.9\.1.*OpenHPSDR-Zeus-v0\.9\.2-win-x64-setup\.exe/)).toBeVisible();
 
   await page.getByRole('button', { name: 'DETAILS' }).click();
@@ -220,15 +220,10 @@ test('packaged startup update opens Settings and the selected release asset', as
   await expect(page.getByText('Version 0.9.2 available')).toBeVisible();
   await expect(page.getByText('OpenHPSDR-Zeus-v0.9.2-win-x64-setup.exe')).toBeVisible();
 
-  await page.getByRole('button', { name: 'UPDATE NOW' }).click();
-
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        ((window as unknown as { __zeusOpenedUrls: string[] }).__zeusOpenedUrls),
-      ),
-    )
-    .toEqual([downloadUrl]);
+  // What the action button does with an asset (in-place install vs opening
+  // the download) is platform-specific and tracked separately; this flow
+  // stops at the offer.
+  await expect(page.getByRole('button', { name: 'INSTALL & RESTART' })).toBeEnabled();
 
   expect(pageErrors).toEqual([]);
 });
