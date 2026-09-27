@@ -102,6 +102,29 @@ export function DownloadVstEngineButton({
   // confirmation and any failure (so the operator can retry).
   if (engineAvailable && !busy && !failed && !done) return null;
 
+  // No engine installed and no install in flight. There is nothing to
+  // download: the engine was a separate upstream binary, served from the
+  // upstream project's download server, and upstream now describes its VST
+  // bridge binaries as proprietary and unpublished. The button used to start
+  // an install that could only fail (issue #62). Say so, and say where an
+  // engine the operator already has is picked up from.
+  if (!busy && !failed && !done) {
+    return (
+      <span
+        className="btn sm"
+        style={{ whiteSpace: 'nowrap', opacity: 0.6, cursor: 'help' }}
+        title={
+          'VST engine not available. The engine earlier Zeus builds downloaded was a separate upstream binary '
+          + 'that is no longer published. If you already have VSTHostEngine.exe from an earlier install, '
+          + 'place it at %LOCALAPPDATA%\\Zeus\\vst-engine\\VSTHostEngine.exe (or anywhere on PATH) and '
+          + 'ANAN Core picks it up automatically.'
+        }
+      >
+        VST engine not available
+      </span>
+    );
+  }
+
   const label = busy
     ? `Installing… ${install.percent}%`
     : failed

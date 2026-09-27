@@ -328,7 +328,13 @@ export function PluginBrowser() {
             color: 'var(--fg-0)',
           }}
         >
-          Couldn’t reach the registry: {load.loadError}
+          No online plugin catalog is available for ANAN Core. The catalog this
+          browser used was hosted by the upstream Zeus project and is no longer
+          published. Plugins you already have keep working, and you can still
+          install a plugin package from a URL or a local file.
+          <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-2)' }}>
+            Detail: {load.loadError}
+          </div>
         </div>
       )}
 

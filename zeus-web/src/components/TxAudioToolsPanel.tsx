@@ -17,7 +17,6 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { CfcSettingsPanel } from './CfcSettingsPanel';
-import { DownloadAudioSuiteButton } from './DownloadAudioSuiteButton';
 import { DownloadVstEngineButton } from './DownloadVstEngineButton';
 import { usePluginPanels } from '../plugins/runtime/usePluginPanels';
 import type { RegisteredPluginPanel } from '../plugins/runtime/pluginRuntime';
@@ -620,7 +619,10 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
       actions={
         <>
           <SuiteButton route="tx" />
-          {!vstMode && <DownloadAudioSuiteButton />}
+          {/* One-click Audio Suite download retired: its six plugin zips lived in
+              OpenHPSDR-Zeus-org/openhpsdr-zeus-plugins, which no longer exists, so
+              the button could only fail (issue #62). Plugins already installed keep
+              working; Settings -> Plugins installs a package from a URL or file. */}
           {/* VST mode: Windows downloads the out-of-process engine; macOS/Linux
               host plugins in-process (AU/VST3), so the engine-download button —
               which errors off Windows — is replaced by a Scan/Add affordance.
