@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Renderer switch for the panadapter surface. WebGPU 3D is the default when the
-// operator/device allows it; the existing WebGL2 panadapter remains the fallback
-// for unsupported GPU stacks or `?webgpuPanadapter=0`.
+// Renderer switch for the panadapter surface. The WebGL2 panadapter is the
+// default; WebGPU 3D is opt-in (the pane's 3D pill or `?webgpuPanadapter=1`,
+// since a7b331a), and falls back to WebGL2 when the GPU stack can't run it.
 
 import { useEffect, useState, type ComponentProps } from 'react';
 import { usePanadapterRenderStore } from '../state/panadapter-render-store';
