@@ -261,6 +261,29 @@ describe('Ft8TxController', () => {
     expect(arm(calls).at(-1)?.body).toEqual({ enabled: true });
   });
 
+  it('does not disarm before the keyer has sent the 73 (zeus-g59v)', () => {
+    const { fn, calls } = makeFetch();
+    const ctrl = new Ft8TxController({ myCall: 'KB2UKA', myGrid4: 'FN12', fetchFn: fn });
+    ctrl.answerCq('CQ K1ABC FN42', 'even');
+    ctrl.enableTx();
+    ctrl.onWindow(['KB2UKA K1ABC -12'], -15, 'even', 'K1ABC KB2UKA FN12');
+    // His RR73 landed after the keyer committed to repeating R-15.
+    ctrl.onWindow(['KB2UKA K1ABC RR73'], undefined, 'even', 'K1ABC KB2UKA R-15');
+    expect(tx(calls).at(-1)?.body.message).toBe('K1ABC KB2UKA 73');
+    const armsBefore = arm(calls).length;
+
+    // Our slot went out as R-15: stay armed, keep the 73 staged.
+    ctrl.onWindow([], undefined, 'odd', 'K1ABC KB2UKA R-15');
+    expect(ctrl.getState().enableTx).toBe(true);
+    expect(arm(calls)).toHaveLength(armsBefore);
+    expect(tx(calls).at(-1)?.body.message).toBe('K1ABC KB2UKA 73');
+
+    // The keyer sent the 73: now it disarms.
+    ctrl.onWindow([], undefined, 'odd', 'K1ABC KB2UKA 73');
+    expect(ctrl.getState().progress).toBe('done');
+    expect(arm(calls).at(-1)?.body).toEqual({ enabled: false });
+  });
+
   it('posts /halt on operator Halt', () => {
     const { fn, calls } = makeFetch();
     const ctrl = new Ft8TxController({ myCall: 'KB2UKA', fetchFn: fn });
