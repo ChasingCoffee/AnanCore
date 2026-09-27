@@ -164,8 +164,70 @@ public sealed class DecoderPipeline : IDisposable
         || pushedNow - pushedAtSlotStart >= MinSlotCoverage * slotSamples;
 
     /// <summary>
-    /// Slot watcher. Wakes shortly after each boundary, snapshots the slot that
-    /// just ended, and dispatches a decode.
+    /// How long before a slot ends its early decode runs. An FT8 signal starts
+    /// 0.5 s into the slot and lasts 12.64 s, so by 1 s before the boundary
+    /// every station with a sane dt has finished: on 354 recorded 20 m FT8
+    /// slots a decode at 14.0 s found 99.9 % of what the full slot gave (the
+    /// two it missed had dt 2.3 and 2.6 s), and FT4 at 6.5 s found all of it.
+    ///
+    /// The silent tail nudges ~1 % of the estimates by one step of the decoder's
+    /// resolution (frequency one 3.125 Hz bin, dt <= 0.08 s, SNR mostly 1 dB);
+    /// the early batch's values are the ones that stand, since the full decode
+    /// only adds messages the early one missed.
+    ///
+    /// Publishing that early batch before the boundary takes the decode time
+    /// off the reply's critical path. The keyer settles the message 350 ms
+    /// into our slot (Ft8KeyerService.StageCommitMs); decoding only after the
+    /// boundary made a slow host (a Pi 5 pass 1 reaches ~300 ms on a busy
+    /// band) miss it and send the reply a whole cycle late.
+    /// </summary>
+    internal const int EarlyDecodeLeadMs = 1_000;
+
+    /// <summary>Slot-relative time of the early decode.</summary>
+    internal static int EarlyDecodeAtMs(DigitalMode mode) => SlotClock.SlotMs(mode) - EarlyDecodeLeadMs;
+
+    /// <summary>
+    /// How long the watcher may sleep before its next event in slot
+    /// <paramref name="slot"/>: the early decode (unless done) or the boundary.
+    /// Capped so a mode change or a clock correction is noticed promptly.
+    /// </summary>
+    internal static int WakeDelayMs(double nowMs, long slot, DigitalMode mode, bool earlyDone)
+    {
+        double slotStart = SlotClock.SlotStartMs(slot, mode);
+        double next = earlyDone
+            ? slotStart + SlotClock.SlotMs(mode) + BoundaryMarginMs
+            : slotStart + EarlyDecodeAtMs(mode);
+        return (int)Math.Clamp(Math.Ceiling(next - nowMs), 1, MaxWakeDelayMs);
+    }
+
+    /// <summary>Wake this far past a boundary, so the slot index has moved on.</summary>
+    private const int BoundaryMarginMs = 5;
+    private const int MaxWakeDelayMs = 100;
+
+    /// <summary>
+    /// The full decode of a slot whose early batch is out publishes only what
+    /// the early one did not: the same message again would be a duplicate row,
+    /// a duplicate PSK Reporter spot and a repeat to the TX sequencer.
+    /// </summary>
+    internal static IReadOnlyList<Ft8DecodeDto> NotYetPublished(
+        IReadOnlyList<Ft8DecodeDto> found, ISet<string> published)
+    {
+        var fresh = new List<Ft8DecodeDto>(found.Count);
+        foreach (var d in found)
+            if (published.Add(d.Text)) fresh.Add(d);
+        return fresh;
+    }
+
+    // The slot whose early decode was attempted, the slot whose early batch
+    // actually went out, and the messages that batch carried.
+    private long _earlySlot = -1;
+    private long _earlyBatchSlot = -1;
+    private readonly HashSet<string> _earlyPublished = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Slot watcher. Wakes 1 s before each boundary to decode the slot so far
+    /// (the early batch, see <see cref="EarlyDecodeLeadMs"/>), and just after
+    /// the boundary to decode the whole slot that ended.
     /// </summary>
     private async Task LoopAsync(CancellationToken ct)
     {
@@ -173,8 +235,6 @@ public sealed class DecoderPipeline : IDisposable
         {
             while (!ct.IsCancellationRequested)
             {
-                await Task.Delay(100, ct);
-
                 double now = _clock.UtcNowMs;
 
                 // Mode is read every cycle: the operator can switch FT8<->FT4
@@ -187,118 +247,184 @@ public sealed class DecoderPipeline : IDisposable
                     _watchedMode = mode;
                     _currentSlot = -1;
                     _pushedAtBoundary = -1;
+                    _earlySlot = -1;
+                    _earlyBatchSlot = -1;
                 }
 
                 long slot = SlotClock.SlotIndex(now, mode);
-                if (slot == _currentSlot) continue;
+                if (slot != _currentSlot)
+                    DecodeEndedSlot(slot, now, mode);
+                else if (_earlySlot != slot
+                         && now >= SlotClock.SlotStartMs(slot, mode) + EarlyDecodeAtMs(mode))
+                    DecodeEarly(slot, now, mode);
 
-                long ended = slot - 1;
-                _currentSlot = slot;
-                long pushedNow = Volatile.Read(ref _pushed);
-                long pushedAtSlotStart = _pushedAtBoundary;
-                _pushedAtBoundary = pushedNow;
-                if (ended < 0) continue;
-
-                float[] audio;
-                int rate, rx;
-                // Lock-free snapshot: acquire the published index, then copy.
-                // We never block the audio thread to read.
-                int w = Volatile.Read(ref _write);
-                rate = Volatile.Read(ref _srcRate);
-                rx = Volatile.Read(ref _receiver);
-                if (rate <= 0) continue;             // no RX audio yet
-
-                // Hand the decoder EXACTLY the slot that just ended, aligned to
-                // its boundary.
-                //
-                // An earlier draft passed the whole 20 s ring. ft8_lib's monitor
-                // starts at sample 0 and fills one slot of blocks, so it analysed
-                // -5 s..+10 s relative to the slot start — a 5 s misalignment
-                // against a protocol that tolerates roughly +/-2.5 s of dt. The
-                // result was frames arriving on time with decodes:[] forever, on
-                // any band. Slot maths that is "close enough" is not close enough.
-                //
-                // `w` is the write head, i.e. now. We woke up to 100 ms after the
-                // boundary, so step back that far to find the boundary in the
-                // ring, then take the preceding slot.
-                double msSinceBoundary = now - SlotClock.SlotStartMs(slot, mode);
-                int samplesSinceBoundary = (int)(msSinceBoundary * rate / 1000.0);
-                int slotSamples = SlotClock.SlotMs(mode) * rate / 1000;
-
-                if (!HeardEnough(pushedAtSlotStart, pushedNow, slotSamples))
-                {
-                    // Most of this slot never arrived (we were transmitting):
-                    // the ring holds the previous slot, not this one. Publish it
-                    // empty — the TX sequencer still needs its window — and do
-                    // not decode, capture or report anything.
-                    _log.LogDebug("ft8: slot {Slot} not decoded — only {Pct:0}% of its audio arrived",
-                        (long)SlotClock.SlotStartMs(ended, mode),
-                        100.0 * (pushedNow - pushedAtSlotStart) / slotSamples);
-                    _events.PublishFt8Decode(new Ft8DecodeBatch
-                    {
-                        Receiver = rx,
-                        SlotStartUnixMs = (long)SlotClock.SlotStartMs(ended, mode),
-                        Protocol = mode == DigitalMode.Ft4 ? "FT4" : "FT8",
-                        Decodes = Array.Empty<Ft8DecodeDto>(),
-                    });
-                    continue;
-                }
-
-                int end = w - samplesSinceBoundary;   // ring index of the boundary
-                audio = Snapshot(end, slotSamples);
-                if (audio.Length == 0) continue;
-
-                var sw = Stopwatch.StartNew();
-                IReadOnlyList<Ft8DecodeDto> decodes;
-                float[]? audio12k = null;
-                long slotStartMs = (long)SlotClock.SlotStartMs(ended, mode);
-                bool firstPublished = false;
-
-                // Each pass is published as soon as it is done. Pass 1 comes
-                // first and always — even when empty: the store keys off slot
-                // boundaries, and the TX sequencer acts the moment it lands, so
-                // later passes must never hold it back.
-                void Publish(int pass, IReadOnlyList<Ft8DecodeDto> found)
-                {
-                    _events.PublishFt8Decode(new Ft8DecodeBatch
-                    {
-                        Receiver = rx,
-                        SlotStartUnixMs = slotStartMs,
-                        Protocol = mode == DigitalMode.Ft4 ? "FT4" : "FT8",
-                        Decodes = found,
-                        Pass = pass,
-                    });
-                    if (pass == 1)
-                    {
-                        firstPublished = true;
-                        FirstPassLatencyMs = sw.Elapsed.TotalMilliseconds;
-                    }
-                }
-
-                try
-                {
-                    (decodes, audio12k) = DecodeSlot(audio, rate, mode, _passes(), Publish);
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "ft8: decode failed for slot {Slot}", slotStartMs);
-                    decodes = Array.Empty<Ft8DecodeDto>();
-                }
-                if (!firstPublished) Publish(1, decodes);
-                sw.Stop();
-                LastLatencyMs = sw.Elapsed.TotalMilliseconds;
-
-                // Only after publishing: the TX sequencer acts on each slot's
-                // first batch as it lands, so nothing optional may sit between
-                // the decode and the publish.
-                if (audio12k is not null && CaptureDir is not null)
-                {
-                    var (a, d, md, s) = (audio12k, decodes, mode, slotStartMs);
-                    _ = Task.Run(() => Capture(s, md, a, d));
-                }
+                await Task.Delay(WakeDelayMs(_clock.UtcNowMs, _currentSlot, mode, _earlySlot == _currentSlot), ct);
             }
         }
         catch (OperationCanceledException) { /* normal */ }
+    }
+
+    /// <summary>
+    /// The early batch: pass 1 on the slot so far, published as the slot's
+    /// first batch before its boundary. Skipped (the full decode then goes
+    /// first, as before) when the slot's start is unknown or most of its audio
+    /// so far never arrived, i.e. we were transmitting.
+    /// </summary>
+    private void DecodeEarly(long slot, double now, DigitalMode mode)
+    {
+        _earlySlot = slot;               // one attempt per slot, whatever happens
+        _earlyPublished.Clear();
+        if (_pushedAtBoundary < 0) return;
+
+        int w = Volatile.Read(ref _write);
+        int rate = Volatile.Read(ref _srcRate);
+        int rx = Volatile.Read(ref _receiver);
+        if (rate <= 0) return;
+
+        int slotSamples = SlotClock.SlotMs(mode) * rate / 1000;
+        int soFar = Math.Min(slotSamples,
+            (int)((now - SlotClock.SlotStartMs(slot, mode)) * rate / 1000.0));
+        if (soFar <= 0 || !HeardEnough(_pushedAtBoundary, Volatile.Read(ref _pushed), soFar)) return;
+
+        // The slot from its start up to now, then silence to the slot's full
+        // length: the decoder sees the same grid as the full decode, so dt and
+        // frequency come out identical.
+        float[] audio = Snapshot(w, soFar);
+        if (audio.Length == 0) return;
+        Array.Resize(ref audio, slotSamples);
+
+        var sw = Stopwatch.StartNew();
+        long slotStartMs = (long)SlotClock.SlotStartMs(slot, mode);
+        IReadOnlyList<Ft8DecodeDto> found;
+        try
+        {
+            (found, _) = DecodeSlot(audio, rate, mode, 1, static (_, _) => { });
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "ft8: early decode failed for slot {Slot}", slotStartMs);
+            return;                      // the full decode goes first instead
+        }
+        foreach (var d in found) _earlyPublished.Add(d.Text);
+        PublishBatch(rx, slotStartMs, mode, found, 1);
+        _earlyBatchSlot = slot;
+        FirstPassLatencyMs = sw.Elapsed.TotalMilliseconds;
+    }
+
+    private void PublishBatch(int rx, long slotStartMs, DigitalMode mode,
+                              IReadOnlyList<Ft8DecodeDto> decodes, int pass) =>
+        _events.PublishFt8Decode(new Ft8DecodeBatch
+        {
+            Receiver = rx,
+            SlotStartUnixMs = slotStartMs,
+            Protocol = mode == DigitalMode.Ft4 ? "FT4" : "FT8",
+            Decodes = decodes,
+            Pass = pass,
+        });
+
+    /// <summary>A new slot has begun: decode the whole slot that just ended.</summary>
+    private void DecodeEndedSlot(long slot, double now, DigitalMode mode)
+    {
+        long ended = slot - 1;
+        _currentSlot = slot;
+        long pushedNow = Volatile.Read(ref _pushed);
+        long pushedAtSlotStart = _pushedAtBoundary;
+        _pushedAtBoundary = pushedNow;
+        if (ended < 0) return;
+
+        // Did the slot that ended already get its early batch? (Attempted is
+        // not enough: a skipped early decode published nothing.)
+        bool early = _earlyBatchSlot == ended;
+        var published = _earlyPublished;
+
+        // Lock-free snapshot: acquire the published index, then copy.
+        // We never block the audio thread to read.
+        int w = Volatile.Read(ref _write);
+        int rate = Volatile.Read(ref _srcRate);
+        int rx = Volatile.Read(ref _receiver);
+        if (rate <= 0) return;             // no RX audio yet
+
+        // Hand the decoder EXACTLY the slot that just ended, aligned to
+        // its boundary.
+        //
+        // An earlier draft passed the whole 20 s ring. ft8_lib's monitor
+        // starts at sample 0 and fills one slot of blocks, so it analysed
+        // -5 s..+10 s relative to the slot start — a 5 s misalignment
+        // against a protocol that tolerates roughly +/-2.5 s of dt. The
+        // result was frames arriving on time with decodes:[] forever, on
+        // any band. Slot maths that is "close enough" is not close enough.
+        //
+        // `w` is the write head, i.e. now. We woke up just after the
+        // boundary, so step back that far to find the boundary in the
+        // ring, then take the preceding slot.
+        double msSinceBoundary = now - SlotClock.SlotStartMs(slot, mode);
+        int samplesSinceBoundary = (int)(msSinceBoundary * rate / 1000.0);
+        int slotSamples = SlotClock.SlotMs(mode) * rate / 1000;
+        long slotStartMs = (long)SlotClock.SlotStartMs(ended, mode);
+
+        if (!HeardEnough(pushedAtSlotStart, pushedNow, slotSamples))
+        {
+            // Most of this slot never arrived (we were transmitting):
+            // the ring holds the previous slot, not this one. Publish it
+            // empty — the TX sequencer still needs its window — and do
+            // not decode, capture or report anything.
+            _log.LogDebug("ft8: slot {Slot} not decoded — only {Pct:0}% of its audio arrived",
+                slotStartMs, 100.0 * (pushedNow - pushedAtSlotStart) / slotSamples);
+            if (!early) PublishBatch(rx, slotStartMs, mode, Array.Empty<Ft8DecodeDto>(), 1);
+            return;
+        }
+
+        int end = w - samplesSinceBoundary;   // ring index of the boundary
+        float[] audio = Snapshot(end, slotSamples);
+        if (audio.Length == 0) return;
+
+        var sw = Stopwatch.StartNew();
+        IReadOnlyList<Ft8DecodeDto> decodes;
+        float[]? audio12k = null;
+        bool firstPublished = early;
+
+        // Each pass is published as soon as it is done. The slot's first
+        // batch always goes out — even when empty: the store keys off slot
+        // boundaries, and the TX sequencer acts the moment it lands, so later
+        // passes must never hold it back. After an early batch, a pass only
+        // adds what that batch did not already carry.
+        void Publish(int pass, IReadOnlyList<Ft8DecodeDto> found)
+        {
+            if (early)
+            {
+                var fresh = NotYetPublished(found, published);
+                if (fresh.Count > 0) PublishBatch(rx, slotStartMs, mode, fresh, pass + 1);
+                return;
+            }
+            PublishBatch(rx, slotStartMs, mode, found, pass);
+            if (pass == 1)
+            {
+                firstPublished = true;
+                FirstPassLatencyMs = sw.Elapsed.TotalMilliseconds;
+            }
+        }
+
+        try
+        {
+            (decodes, audio12k) = DecodeSlot(audio, rate, mode, _passes(), Publish);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "ft8: decode failed for slot {Slot}", slotStartMs);
+            decodes = Array.Empty<Ft8DecodeDto>();
+        }
+        if (!firstPublished) PublishBatch(rx, slotStartMs, mode, decodes, 1);
+        sw.Stop();
+        LastLatencyMs = sw.Elapsed.TotalMilliseconds;
+
+        // Only after publishing: the TX sequencer acts on each slot's
+        // first batch as it lands, so nothing optional may sit between
+        // the decode and the publish.
+        if (audio12k is not null && CaptureDir is not null)
+        {
+            var (a, d, md, s) = (audio12k, decodes, mode, slotStartMs);
+            _ = Task.Run(() => Capture(s, md, a, d));
+        }
     }
 
     // ---- SEAM ---------------------------------------------------------------
