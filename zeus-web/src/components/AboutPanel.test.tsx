@@ -53,9 +53,9 @@ describe('AboutPanel external links', () => {
     clickLinkByText('Open the User Manual (PDF)');
     expect(openExternalUrl).toHaveBeenCalledTimes(1);
     const url = openExternalUrl.mock.calls[0]?.[0] as string;
-    // Must be absolute (the host bridge rejects relative URLs) and point at /manual.
+    // Must be absolute (the host bridge rejects relative URLs) and point at the static PDF.
     expect(url).toMatch(/^https?:\/\//);
-    expect(new URL(url).pathname).toBe('/manual');
+    expect(new URL(url).pathname).toBe('/Zeus-Operator-Manual.pdf');
   });
 
   it('opens the GitHub link via the host bridge', () => {

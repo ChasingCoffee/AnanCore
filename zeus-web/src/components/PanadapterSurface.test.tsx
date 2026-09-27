@@ -20,25 +20,13 @@ vi.mock('./Panadapter3D', () => ({
 describe('PanadapterSurface', () => {
   afterEach(() => {
     act(() => {
-      usePanadapterRenderStore.setState({ panadapter3dEnabled: true });
+      usePanadapterRenderStore.setState({ panadapter3dEnabled: false });
     });
     localStorage.clear();
     vi.restoreAllMocks();
   });
 
-  it('uses the WebGPU 3D panadapter by default', () => {
-    const { container, unmount } = render(createElement(PanadapterSurface));
-
-    expect(container.querySelector('[data-testid="webgpu-panadapter-3d"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="webgl-panadapter"]')).toBeNull();
-    unmount();
-  });
-
-  it('uses the WebGL panadapter when the WebGPU panadapter is disabled', () => {
-    act(() => {
-      usePanadapterRenderStore.getState().setPanadapter3dEnabled(false);
-    });
-
+  it('uses the WebGL panadapter by default (3D is opt-in since a7b331a)', () => {
     const { container, unmount } = render(createElement(PanadapterSurface));
 
     expect(container.querySelector('[data-testid="webgl-panadapter"]')).not.toBeNull();
@@ -46,7 +34,22 @@ describe('PanadapterSurface', () => {
     unmount();
   });
 
+  it('uses the WebGPU 3D panadapter when the operator enables it', () => {
+    act(() => {
+      usePanadapterRenderStore.getState().setPanadapter3dEnabled(true);
+    });
+
+    const { container, unmount } = render(createElement(PanadapterSurface));
+
+    expect(container.querySelector('[data-testid="webgpu-panadapter-3d"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="webgl-panadapter"]')).toBeNull();
+    unmount();
+  });
+
   it('switches live between 3D and 2D renderers', () => {
+    act(() => {
+      usePanadapterRenderStore.getState().setPanadapter3dEnabled(true);
+    });
     const { container, unmount } = render(createElement(PanadapterSurface));
 
     expect(container.querySelector('[data-testid="webgpu-panadapter-3d"]')).not.toBeNull();

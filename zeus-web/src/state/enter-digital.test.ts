@@ -119,27 +119,13 @@ describe('availability gate', () => {
     expect(ft8.closeWorkspace).not.toHaveBeenCalled();
   });
 
-  it('gates FT8/FT4 off when the Zeus Digital plugin is not installed', () => {
+  it('the plugin store no longer gates FT8/FT4 (fused build: the backend is in core)', () => {
     useDigitalPluginStore.setState({ installed: false, live: false });
-    expect(isDigitalEntryAvailable('FT8')).toBe(false);
-    expect(isDigitalEntryAvailable('FT4')).toBe(false);
-    expect(digitalEntryUnavailableReason('FT8')).toBe(
-      'Install the Zeus Digital plugin (Settings → Plugins)',
-    );
-  });
-
-  it('gates FT8/FT4 off when installed but not live (activation failed / shut down)', () => {
-    useDigitalPluginStore.setState({ installed: true, live: false });
-    expect(isDigitalEntryAvailable('FT8')).toBe(false);
-    expect(digitalEntryUnavailableReason('FT4')).toBe(
-      'Zeus Digital plugin is not responding — try restarting Zeus',
-    );
-  });
-
-  it('enterDigital is a no-op while the plugin gate is closed', () => {
-    useDigitalPluginStore.setState({ installed: false, live: false });
+    expect(isDigitalEntryAvailable('FT8')).toBe(true);
+    expect(isDigitalEntryAvailable('FT4')).toBe(true);
+    expect(digitalEntryUnavailableReason('FT8')).toBeNull();
     enterDigital('FT8');
-    expect(ft8.openWorkspace).not.toHaveBeenCalled();
+    expect(ft8.openWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it('WSPR has no unavailable reason now that it ships in core', () => {

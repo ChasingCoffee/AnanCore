@@ -524,7 +524,7 @@ describe('POST helpers', () => {
     });
   });
 
-  it('setZoom posts { level } to /api/rx/zoom', async () => {
+  it('setZoom posts { level, rx } to /api/rx/zoom (rx defaults to 0)', async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse(okState));
@@ -534,7 +534,7 @@ describe('POST helpers', () => {
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('/api/rx/zoom');
     expect(init?.method).toBe('POST');
-    expect(JSON.parse((init?.body ?? '') as string)).toEqual({ level: 4 });
+    expect(JSON.parse((init?.body ?? '') as string)).toEqual({ level: 4, rx: 0 });
   });
 
   // Regression (#1191): the CTUN zoom/recenter path computes a fractional LO

@@ -162,7 +162,7 @@ describe('QrzAccessGate', () => {
     });
 
     expect(container.textContent).toContain('QRZ Login Required');
-    expect(container.textContent).toContain('QRZ callsign is the Zeus username.');
+    expect(container.textContent).toContain('QRZ callsign is the ANAN Core username.');
     expect(container.querySelector('input[autocomplete="username"]')).not.toBeNull();
     expect(container.querySelector('input[type="password"]')).not.toBeNull();
     expect(

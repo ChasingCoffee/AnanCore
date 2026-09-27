@@ -78,7 +78,8 @@ function pushSnapFrame(spec: Float32Array, seq = 1): void {
 }
 
 function pushRx2SnapFrame(spec: Float32Array, seq = 1): void {
-  maybeUpdateEstimator({ panDb: spec, panValid: true, width: SNAP_WIDTH, hzPerPixel: SNAP_HZ_PER_PX });
+  // RX2's frames train RX2's estimator bank (per-receiver since 0c5047d).
+  maybeUpdateEstimator({ panDb: spec, panValid: true, width: SNAP_WIDTH, hzPerPixel: SNAP_HZ_PER_PX, rxId: 1 });
   useDisplayStore.setState({
     rx2: {
       ...createEmptyDisplaySlice(),
@@ -313,7 +314,7 @@ describe('usePanTuneGesture mobile touch mode', () => {
 
     expect(setVfoMock).not.toHaveBeenCalled();
     expect(setVfoBMock).not.toHaveBeenCalled();
-    expect(setZoomMock).toHaveBeenCalledWith(8, expect.any(AbortSignal));
+    expect(setZoomMock).toHaveBeenCalledWith(8, 0, expect.any(AbortSignal));
 
     unmount();
   });
@@ -496,7 +497,7 @@ describe('usePanTuneGesture mobile touch mode', () => {
     });
 
     expect(setRadioLoMock).toHaveBeenCalledWith(tunedHz, expect.any(AbortSignal));
-    expect(setZoomMock).toHaveBeenCalledWith(5, expect.any(AbortSignal));
+    expect(setZoomMock).toHaveBeenCalledWith(5, 0, expect.any(AbortSignal));
     expect(useConnectionStore.getState().vfoHz).toBe(tunedHz);
     expect(useConnectionStore.getState().radioLoHz).toBe(tunedHz);
     expect(useConnectionStore.getState().ctunEnabled).toBe(true);
