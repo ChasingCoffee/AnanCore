@@ -163,8 +163,9 @@ export function AboutPanel() {
       <div style={{ marginBottom: 20, paddingTop: 20, borderTop: '1px solid var(--panel-border)' }}>
         <p style={{ margin: '0 0 12px 0', lineHeight: 1.6, color: 'var(--fg-1)' }}>
           📖{' '}
-          {/* The manual PDF ships inside every installer; the backend serves it
-              at /manual (see ZeusEndpoints). Routed through openExternalUrl so it
+          {/* The manual PDF ships inside every installer as the static
+              /Zeus-Operator-Manual.pdf (a2f080b; /manual only redirects there
+              now, see ZeusEndpoints). Routed through openExternalUrl so it
               opens in the OS browser — the Photino desktop webview swallows a
               plain target="_blank" navigation. A no-op in dev builds that don't
               bundle the PDF (the backend 404s). */}
