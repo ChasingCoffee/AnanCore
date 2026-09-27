@@ -6,7 +6,7 @@
 // VST3 elsewhere). Two failures were live-reproduced before the fix:
 //   * POST /api/rx-audio-suite/plugins/{id}/editor  -> 404 "No such plugin"
 //     even though the bridge hosts the plugin (the RX route never consulted it).
-//   * POST /api/tx-audio-suite/plugins/{id}/editor  -> 409 "Download VST Engine"
+//   * POST /api/tx-audio-suite/plugins/{id}/editor  -> 409 "isn't loaded" (engine retired)
 //     for a bridge-hosted in-process plugin (the engine guard ran before the
 //     bridge fallback).
 //
