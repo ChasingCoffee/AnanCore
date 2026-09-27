@@ -42,28 +42,27 @@ jobs:
             os: macos-latest
             arch: arm64
 
-          # ---- arm64 .NET test legs (NEW) --------------------------------
-          # GitHub's native arm64 runners are GA for public repos:
+          # ---- arm64 .NET test leg ----------------------------------------
+          # GitHub's native arm64 runner is GA for public repos:
           #   ubuntu-24.04-arm  -> Linux arm64 (covers Raspberry Pi class ABI)
-          #   windows-11-arm    -> Windows arm64
           # We run `dotnet test` natively here rather than QEMU so the DSP /
           # native-load path is exercised on real arm64 silicon. QEMU was
           # rejected: it cannot validate the WDSP native .so/.dll load reliably
           # (emulated syscalls + missing arm64 native runtimes) and is far
-          # slower. If a native arm runner label is ever disabled for this repo
-          # these legs will fail to schedule — that is why they are flagged
-          # experimental below until a maintainer confirms a green run.
-          # TODO(maintainer): drop `experimental: true` on these two legs once
-          # a run on the real arm64 runners is confirmed green; then they
-          # become required, satisfying the "green on every arch" rule.
+          # slower. If the native arm runner label is ever disabled for this
+          # repo the leg will fail to schedule — that is why it is flagged
+          # experimental below until a maintainer promotes it.
+          # TODO(maintainer): drop `experimental: true` once a green run on the
+          # arm64 runner is confirmed; then it becomes required.
           - name: linux-arm64
             os: ubuntu-24.04-arm
             arch: arm64
             experimental: true
-          - name: windows-arm64
-            os: windows-11-arm
-            arch: arm64
-            experimental: true
+
+          # ---- Windows arm64 — RETIRED ------------------------------------
+          # Releases do not ship Windows arm64 (release-windows.yml builds
+          # win-x64 only), so the windows-11-arm leg only burned ~20 min of
+          # runner time per run for a platform nobody installs.
 
           # ---- macOS x64 (Intel) coverage — RETIRED ----------------------
           # The macos-x64 leg ran on `macos-13`, GitHub's last Intel hosted
