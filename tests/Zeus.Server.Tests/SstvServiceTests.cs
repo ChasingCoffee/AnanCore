@@ -42,17 +42,35 @@ public sealed class SstvServiceTests
             // backlog near the ring size, however slow a loaded CI box makes
             // the decode thread (an overrun is the service's designed
             // response to a stall, not what this test is about).
+            //
+            // The hub keeps 64 frames and drops the oldest, so a reader
+            // starved by a loaded box would lose `start` under the row flood.
+            // Hold the picture's rows back until the reader has taken it.
+            int afterVis = 48_000 + (int)((SstvEncoder.VisMs + 200) * 48);
+            bool startSeen = false;
+            var deadline = DateTime.UtcNow.AddSeconds(20);
             const int block = 1024;
             for (int i = 0; i < padded.Length; i += block)
             {
                 svc.FeedRxAudio(0, 48_000,
                     padded.AsMemory(i, Math.Min(block, padded.Length - i)));
                 while (svc.Backlog > 3 * 12_000) await Task.Delay(5);
+                while (!startSeen && i >= afterVis && DateTime.UtcNow < deadline)
+                {
+                    lock (frames) startSeen = frames.Any(IsStart);
+                    if (!startSeen) await Task.Delay(5);
+                }
             }
 
-            var deadline = DateTime.UtcNow.AddSeconds(20);
-            while (svc.Status().Images.Length == 0 && DateTime.UtcNow < deadline)
-                await Task.Delay(50);
+            // `end` is published after the picture is saved to the gallery;
+            // an image can show in Status() a moment earlier, still without
+            // its Key. Wait for the event, not the list.
+            bool endSeen = false;
+            while (!endSeen && DateTime.UtcNow < deadline)
+            {
+                lock (frames) endSeen = frames.Any(IsEnd);
+                if (!endSeen) await Task.Delay(50);
+            }
 
             var st = svc.Status();
             var img = Assert.Single(st.Images);
@@ -92,11 +110,16 @@ public sealed class SstvServiceTests
 
         lock (frames)
         {
-            Assert.Contains(frames, f => f.StartsWith("event: sstv") && f.Contains("\"kind\":\"start\""));
-            Assert.Contains(frames, f => f.Contains("\"kind\":\"end\""));
+            Assert.Contains(frames, IsStart);
+            Assert.Contains(frames, IsEnd);
             // The hub is bounded (DropOldest), so not every row frame need
             // survive a burst this fast — but rows must flow.
             Assert.True(frames.Count(f => f.Contains("\"kind\":\"rows\"")) > 10);
         }
     }
+
+    private static bool IsStart(string f) =>
+        f.StartsWith("event: sstv") && f.Contains("\"kind\":\"start\"");
+
+    private static bool IsEnd(string f) => f.Contains("\"kind\":\"end\"");
 }
