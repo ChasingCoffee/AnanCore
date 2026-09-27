@@ -101,3 +101,63 @@ describe('TxAudioToolsPanel docked rails (Bug 2 platform affordance)', () => {
     unmount();
   });
 });
+
+// Windows shape: the platform where the retired out-of-process engine was
+// supported. Before the retirement this DTO made BOTH rails render the engine
+// download button INSTEAD of Scan/Add — and TX showed even that only in VST
+// mode — so Windows had no way to add a VST3 at all (field, issue #62).
+const WINDOWS_INSTALL_DTO = {
+  phase: 'idle',
+  percent: 0,
+  engineAvailable: false,
+  engineSupported: true,
+  inProcessHostSupported: true,
+  auSupported: false,
+};
+
+describe('TxAudioToolsPanel on Windows (VST engine retired)', () => {
+  beforeEach(() => {
+    useAudioSuiteStore.setState(useAudioSuiteStore.getInitialState(), true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/vst-engine/install')) return response(WINDOWS_INSTALL_DTO);
+        return response({});
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    useAudioSuiteStore.setState(useAudioSuiteStore.getInitialState(), true);
+  });
+
+  it('offers Scan/Add on both rails, in Native mode, and never the engine download', async () => {
+    const { container, unmount } = render(createElement(TxAudioToolsPanel));
+    await flush(() => useAudioSuiteStore.getState().engineSupportLoaded);
+    expect(useAudioSuiteStore.getState().engineSupported).toBe(true);
+
+    const buttons = Array.from(container.querySelectorAll('button'));
+    // One Scan/Add per rail (TX and RX), even though processing mode is Native.
+    expect(buttons.filter((b) => b.textContent === 'Scan plugins')).toHaveLength(2);
+    expect(buttons.some((b) => b.textContent?.includes('Download VST Engine'))).toBe(false);
+    expect(container.textContent).not.toContain('VST engine not available');
+
+    unmount();
+  });
+
+  it('has no Native/VST route toggle and reports one Native route', async () => {
+    const { container, unmount } = render(createElement(TxAudioToolsPanel));
+    await flush(() => useAudioSuiteStore.getState().engineSupportLoaded);
+
+    const buttons = Array.from(container.querySelectorAll('button'));
+    expect(buttons.some((b) => b.textContent === 'VST' || b.textContent === 'Native')).toBe(false);
+    expect(container.textContent).not.toContain('VST OFF');
+    expect(container.textContent).not.toContain('VST ON');
+    expect(container.textContent).toContain('NATIVE');
+
+    unmount();
+  });
+});

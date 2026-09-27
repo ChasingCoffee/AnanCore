@@ -278,13 +278,17 @@ public sealed class TxAudioProfileService : IHostedService
     private TxAudioProfileDto SanitizeForCurrentInstall(TxAudioProfileDto profile, string? fallbackName)
     {
         var clean = TxAudioProfileStore.Sanitize(profile, fallbackName: fallbackName);
-        var nativeMode = !string.Equals(clean.ProcessingMode, "vst", StringComparison.OrdinalIgnoreCase);
+        // VST mode is retired in ANAN Core (AudioProcessingModeService.Supported):
+        // every profile applies in Native mode, where VST3 plugins run in-process.
+        // So a profile KEEPS its VST chain entries — stripping them in Native mode
+        // made sense only while VSTs lived in the separate engine; now it would
+        // silently drop every VST from every profile. Engine state blobs are kept
+        // as the operator saved them; nothing applies them any more.
 
         var order = new List<string>(clean.ChainOrder.Count);
         var seenOrder = new HashSet<string>(StringComparer.Ordinal);
         foreach (var id in clean.ChainOrder)
         {
-            if (nativeMode && IsVstPlugin(id)) continue;
             if (seenOrder.Add(id)) order.Add(id);
         }
 
@@ -299,7 +303,6 @@ public sealed class TxAudioProfileService : IHostedService
         var nativeStates = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         foreach (var (id, state) in clean.NativePluginStates)
         {
-            if (nativeMode && IsVstPlugin(id)) continue;
             nativeStates[id] = state;
         }
 
@@ -307,9 +310,8 @@ public sealed class TxAudioProfileService : IHostedService
         {
             ChainOrder = order,
             ChainParked = parked,
-            VstPluginStates = nativeMode
-                ? new Dictionary<string, string>(StringComparer.Ordinal)
-                : clean.VstPluginStates,
+            ProcessingMode = "native",
+            VstPluginStates = clean.VstPluginStates,
             NativePluginStates = nativeStates,
         };
     }

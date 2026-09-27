@@ -353,10 +353,29 @@ public sealed class AudioProcessingModeService : IHostedService
         lock (_editorLock) return _idToEngineSlot.ContainsKey(pluginId);
     }
 
+    /// <summary>
+    /// ANAN Core has retired the out-of-process VST engine: it was a separate
+    /// executable fetched from upstream's download server, that server and the
+    /// engine's source repository are both gone, and ANAN Core does not launch
+    /// closed or third-party executables. VST3 plugins run in the in-process
+    /// bridge (native/zeus-vst-bridge) inside the Native chain instead. Any
+    /// request for VST mode — a persisted setting, the API, an imported
+    /// profile — resolves to Native, so the engine is never launched.
+    /// </summary>
+    internal static AudioProcessingMode Supported(AudioProcessingMode requested) =>
+        AudioProcessingMode.Native;
+
     public Task StartAsync(CancellationToken ct)
     {
         var persisted = _store.GetMode();
-        _mode = persisted ?? AudioProcessingMode.Native;
+        _mode = Supported(persisted ?? AudioProcessingMode.Native);
+        if (persisted == AudioProcessingMode.Vst)
+        {
+            _log.LogInformation(
+                "Saved Audio Suite mode was VST (the retired out-of-process engine); using Native — VST3 plugins run in-process");
+            try { _store.SetMode(AudioProcessingMode.Native); }
+            catch (Exception ex) { _log.LogWarning(ex, "AudioProcessingModeService persist threw"); }
+        }
 
         _log.LogInformation(
             "AudioProcessingModeService initialised; mode = {Mode}{Source}",
@@ -384,6 +403,7 @@ public sealed class AudioProcessingModeService : IHostedService
     /// </summary>
     public async Task<AudioProcessingMode> SetModeAsync(AudioProcessingMode mode, CancellationToken ct = default)
     {
+        mode = Supported(mode);
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -428,7 +448,7 @@ public sealed class AudioProcessingModeService : IHostedService
                     break;
                 case VstEngineStartResult.EngineNotFound:
                     _log.LogWarning(
-                        "VST mode selected but no VSTHost engine is installed — TX audio passes through clean. Install from https://github.com/KlayaR/VSTHost.");
+                        "VST engine requested but not available — TX audio runs the Native chain.");
                     break;
                 case VstEngineStartResult.PlatformUnsupported:
                     _log.LogWarning("VST mode is Windows-only; TX audio passes through clean on this platform.");

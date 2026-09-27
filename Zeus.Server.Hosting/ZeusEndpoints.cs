@@ -517,30 +517,22 @@ public static class ZeusEndpoints
             Results.Ok(EngineInstallDto(installer)));
         app.MapGet("/api/tx-audio-suite/vst-engine/install", (VstEngineInstaller installer) =>
             Results.Ok(EngineInstallDto(installer)));
-        app.MapPost("/api/audio-suite/vst-engine/install", (VstEngineInstaller installer) =>
+        // Install / repair are RETIRED in ANAN Core. They downloaded a separate
+        // engine executable from upstream's download server; that server and the
+        // engine's source repository are gone, and ANAN Core does not fetch or
+        // launch closed or third-party executables. VST3 plugins run in-process
+        // (native/zeus-vst-bridge). 410 Gone — nothing is downloaded. The GET
+        // status routes above remain so older clients polling them still get an
+        // answer.
+        static IResult EngineRetired() => Results.Json(new
         {
-            installer.Start();
-            return Results.Ok(EngineInstallDto(installer));
-        });
-        app.MapPost("/api/tx-audio-suite/vst-engine/install", (VstEngineInstaller installer) =>
-        {
-            installer.Start();
-            return Results.Ok(EngineInstallDto(installer));
-        });
-        // Repair/reinstall — force a re-download of the manifest's verified engine
-        // even when one is already present, replacing a stale/corrupt/crash-looping
-        // binary. Backs the "Repair engine" affordance the UI shows when the engine
-        // is Faulted; also runs automatically on crash-loop (AudioProcessingModeService).
-        app.MapPost("/api/audio-suite/vst-engine/repair", (VstEngineInstaller installer) =>
-        {
-            installer.Start(force: true);
-            return Results.Ok(EngineInstallDto(installer));
-        });
-        app.MapPost("/api/tx-audio-suite/vst-engine/repair", (VstEngineInstaller installer) =>
-        {
-            installer.Start(force: true);
-            return Results.Ok(EngineInstallDto(installer));
-        });
+            error = "The separate VST engine is not part of ANAN Core. VST3 plugins run "
+                + "inside ANAN Core itself: add them to the Audio Suite chain in Native mode.",
+        }, statusCode: 410);
+        app.MapPost("/api/audio-suite/vst-engine/install", () => EngineRetired());
+        app.MapPost("/api/tx-audio-suite/vst-engine/install", () => EngineRetired());
+        app.MapPost("/api/audio-suite/vst-engine/repair", () => EngineRetired());
+        app.MapPost("/api/tx-audio-suite/vst-engine/repair", () => EngineRetired());
 
         // Audio plugin chain order — operator's preferred sequence for
         // the plugins in the Audio Suite window. GET returns the
@@ -645,7 +637,12 @@ public static class ZeusEndpoints
         {
             return Results.Ok(new
             {
-                mode = "vst",
+                // "native": RX VST3 runs in-process; the RX engine is retired.
+                // This used to be hard-coded "vst", which made the editor hook
+                // (useVstEditor.waitForEngineActive) treat any RX editor 409 as
+                // an engine still starting — 20 s of "VST engine starting…"
+                // before the real reason (parked / failed to load) appeared.
+                mode = "native",
                 engineActive = rxVst.EngineActive,
                 engineAvailable = rxVst.EngineAvailable,
                 activePlugins = rxVst.ActivePluginCount,

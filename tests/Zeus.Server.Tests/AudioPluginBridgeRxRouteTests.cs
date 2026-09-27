@@ -13,8 +13,11 @@ namespace Zeus.Server.Tests;
 public sealed class AudioPluginBridgeRxRouteTests
 {
     [Fact]
-    public void ReapplyRxSlots_RoutesRxVstOnlyThroughRxEngine_WhenEngineAvailable()
+    public void ReapplyRxSlots_NeverRoutesRxVstThroughEngine_EvenWithEngineOnDisk()
     {
+        // The out-of-process engine is retired in ANAN Core: an engine exe present
+        // on disk (VstEnginePathOverride) must NOT pull RX VSTs out to it. The
+        // plugin stays with the in-process RX chain.
         using var engineEnv = VstEnginePathOverride.Create();
         using var fixture = new RxVstFixture();
         var bridge = NewBridge(fixture.Service);
@@ -26,12 +29,10 @@ public sealed class AudioPluginBridgeRxRouteTests
         const string pluginId = "com.openhpsdr.zeus.rxvst.fake";
         SeedRxPlugin(bridge, pluginId, plugin);
 
-        var nativeActive = ReapplyRxSlots(bridge, [pluginId], out var engineRouteActive);
+        ReapplyRxSlots(bridge, [pluginId], out var engineRouteActive);
 
-        Assert.False(nativeActive);
-        Assert.True(engineRouteActive);
-        Assert.False(RxSlotMap(bridge).ContainsKey(pluginId));
-        Assert.Null(RxChain(bridge).GetSlot(0));
+        Assert.False(engineRouteActive);
+        Assert.False(fixture.Service.EngineAvailable);
     }
 
     [Fact]

@@ -16,8 +16,9 @@
 //     radio down).
 // In both, the bare in-process bridge would surface a "set ZEUS_ENABLE_VST_LOAD=1"
 // hint — a developer-only escape hatch that points a new operator at the wrong
-// (and unsafe) fix. The supported path is the crash-isolated out-of-process
-// engine: install it ("Download VST Engine") and run the Audio Suite in VST mode.
+// (and unsafe) fix. ANAN Core has retired the out-of-process engine, so the
+// only remaining guidance is about the in-process bridge: a plugin that is not
+// hosted is either parked or failed to load.
 
 namespace Zeus.Server;
 
@@ -37,27 +38,19 @@ internal static class VstEditorHint
         AudioProcessingMode mode, bool engineActive, bool engineInstalled,
         bool nativeLoadEnabled = true)
     {
-        // Engine is routing — the editor open should be attempted via the engine.
+        // The out-of-process engine is retired in ANAN Core, so no message may
+        // send the operator to it: no "Download VST Engine", no "switch to VST
+        // mode". mode / engineActive / engineInstalled are kept in the signature
+        // for the existing callers; only an engine that is somehow routing still
+        // short-circuits, and it never is.
         if (engineActive)
             return null;
-
-        // VST processing mode selected but the engine isn't routing yet.
-        if (mode == AudioProcessingMode.Vst)
-            return engineInstalled
-                ? "The VST engine is installed but isn't routing yet. Give it a moment, then reopen the editor."
-                : "The VST engine isn't installed yet. Open the TX Audio Suite and click "
-                  + "\"Download VST Engine\" to download and enable it, then reopen the editor.";
-
-        // Native mode, but the in-process bridge won't host this plugin (the safe
-        // default for TX). Guide to the crash-isolated engine, not the dev hatch.
-        if (!nativeLoadEnabled)
-            return engineInstalled
-                ? "TX VSTs run in the dedicated VST engine. Switch the Audio Suite "
-                  + "processing mode to \"VST\" to load and edit this plugin."
-                : "TX VSTs run in the dedicated VST engine. Open the TX Audio Suite, click "
-                  + "\"Download VST Engine\", then switch the processing mode to \"VST\" to "
-                  + "load and edit this plugin.";
-
-        return null;
+        // The in-process bridge will host this plugin: attempt the open normally.
+        if (nativeLoadEnabled)
+            return null;
+        // Not hosted in-process: the plugin is parked, or it failed to load.
+        return "This VST isn't loaded, so there is no editor to open. Move it into the "
+            + "active chain; if it is already there, it failed to load — check that it is "
+            + "a VST3 audio effect built for this computer.";
     }
 }

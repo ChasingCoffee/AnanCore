@@ -260,7 +260,7 @@ public sealed class TxAudioProfileServiceTests : IDisposable
     }
 
     [Fact]
-    public void Import_NativeProfile_StripsVstEntriesFromActiveChain()
+    public void Import_Profile_KeepsVstEntries_VstRunsInProcessInNative()
     {
         const string json = """
         {
@@ -308,15 +308,18 @@ public sealed class TxAudioProfileServiceTests : IDisposable
 
         Assert.Equal("voodoo-4k", imported.Id);
         Assert.Equal("native", imported.ProcessingMode);
-        Assert.DoesNotContain("com.openhpsdr.zeus.vst.clear", imported.ChainOrder);
+        // VST mode is retired: Native hosts VST3 in-process, so the VST stays in
+        // the chain (and, being in the active order, is no longer also parked).
+        Assert.Contains("com.openhpsdr.zeus.vst.clear", imported.ChainOrder);
+        Assert.DoesNotContain("com.openhpsdr.zeus.vst.clear", imported.ChainParked);
         Assert.Contains("com.openhpsdr.zeus.samples.noisegate", imported.ChainOrder);
         Assert.Contains("com.openhpsdr.zeus.samples.eq", imported.ChainOrder);
-        Assert.Empty(imported.VstPluginStates);
+        Assert.Equal("opaque", imported.VstPluginStates["com.openhpsdr.zeus.vst.clear"]);
         Assert.Equal("true", imported.NativePluginStates["com.openhpsdr.zeus.samples.eq"]["bypass"]);
     }
 
     [Fact]
-    public async Task Apply_NativeStoredProfile_DoesNotReplayVstChain()
+    public async Task Apply_StoredProfile_KeepsVstChain_AndNeverSelectsVstMode()
     {
         await _mode.StartAsync(CancellationToken.None);
         _profileStore.Upsert(new TxAudioProfileDto(
@@ -342,8 +345,9 @@ public sealed class TxAudioProfileServiceTests : IDisposable
         var applied = await _service.ApplyAsync("unsafe");
 
         Assert.NotNull(applied);
-        Assert.DoesNotContain("com.openhpsdr.zeus.vst.clear", applied!.ChainOrder);
-        Assert.Empty(applied.VstPluginStates);
+        Assert.Contains("com.openhpsdr.zeus.vst.clear", applied!.ChainOrder);
+        Assert.Equal("native", applied.ProcessingMode);
+        Assert.Equal(AudioProcessingMode.Native, _mode.Mode);
         Assert.Equal("unsafe", _service.LastLoadedId);
     }
 

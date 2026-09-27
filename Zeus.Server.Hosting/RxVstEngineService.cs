@@ -82,7 +82,10 @@ public sealed class RxVstEngineService : IHostedService, IAsyncDisposable
         _ = SyncEngineAsync(_chainOrder.CurrentOrder, CancellationToken.None);
     }
 
-    public bool EngineAvailable => VstEngineController.FindEngineExe() is not null;
+    // Retired in ANAN Core (see AudioProcessingModeService.Supported): even if an
+    // engine executable is present on disk, it is never used. RX VST3 plugins run
+    // in-process through the native bridge in the RX chain.
+    public bool EngineAvailable => false;
     public bool EngineActive => _engine.IsActive && Volatile.Read(ref _activeVstCount) > 0;
     public int ActivePluginCount => Volatile.Read(ref _activeVstCount);
     public long DegradedBlocks => _engine.DegradedBlocks;
@@ -251,6 +254,14 @@ public sealed class RxVstEngineService : IHostedService, IAsyncDisposable
 
         try
         {
+            if (!EngineAvailable)
+            {
+                // Never launch the retired engine, whatever the chain holds.
+                Volatile.Write(ref _activeVstCount, 0);
+                _engine.Deactivate();
+                ClearEngineMaps();
+                return;
+            }
             var desired = BuildDesiredSlots(activeOrder);
             Volatile.Write(ref _activeVstCount, desired.Count);
 

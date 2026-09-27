@@ -17,7 +17,6 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { CfcSettingsPanel } from './CfcSettingsPanel';
-import { DownloadVstEngineButton } from './DownloadVstEngineButton';
 import { usePluginPanels } from '../plugins/runtime/usePluginPanels';
 import type { RegisteredPluginPanel } from '../plugins/runtime/pluginRuntime';
 import {
@@ -552,25 +551,19 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
   }, [chainPanels]);
 
   const masterBypassed = useAudioSuiteStore((s) => s.masterBypassed);
-  const processingMode = useAudioSuiteStore((s) => s.processingMode);
-  const engineAvailable = useAudioSuiteStore((s) => s.vstEngineAvailable);
-  const engineActive = useAudioSuiteStore((s) => s.vstEngineActive);
-  const engineSupported = useAudioSuiteStore((s) => s.engineSupported);
   const engineSupportLoaded = useAudioSuiteStore((s) => s.engineSupportLoaded);
   const chainOrder = useAudioSuiteStore((s) => s.chainOrder);
   const loadMasterBypassFromServer = useAudioSuiteStore(
     (s) => s.loadMasterBypassFromServer,
   );
-  const loadProcessingModeFromServer = useAudioSuiteStore(
-    (s) => s.loadProcessingModeFromServer,
-  );
   const loadEngineSupportFromServer = useAudioSuiteStore(
     (s) => s.loadEngineSupportFromServer,
   );
 
-  const vstMode = processingMode === 'vst';
+  // One route. The separate VST engine (and with it the Native/VST toggle) is
+  // retired in ANAN Core: VST3 plugins run in-process inside the Native chain,
+  // so the TX rail shows the built-in stages AND any active VSTs together.
   const vstSlots = useMemo(() => {
-    if (!vstMode) return [];
     const orderIndex = new Map(chainOrder.map((id, i) => [id, i] as const));
     return chainPanels
       .filter((p) => p.editorBacked === true && orderIndex.has(p.pluginId))
@@ -580,29 +573,17 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
         title: (p.title || p.pluginId.split('.').pop() || 'VST').toUpperCase(),
         installed: true,
       }));
-  }, [vstMode, chainPanels, chainOrder]);
+  }, [chainPanels, chainOrder]);
 
-  const slots = vstMode ? vstSlots : v1Slots;
-  const statusLabel = !vstMode
-    ? 'NATIVE'
-    : engineActive
-      ? 'VST ON'
-      : engineAvailable
-        ? 'VST IDLE'
-        : 'VST OFF';
-  const statusTitle = !vstMode
-    ? 'Transmit audio is using the native in-process Audio Suite route.'
-    : engineActive
-      ? 'Transmit VST route is active.'
-      : engineAvailable
-        ? 'Transmit VST route is selected but the engine is not routing yet.'
-        : 'Transmit VST route is selected but no VST engine is installed.';
+  const slots = useMemo(() => [...v1Slots, ...vstSlots], [v1Slots, vstSlots]);
+  const statusLabel = 'NATIVE';
+  const statusTitle =
+    'Transmit audio runs the in-process Audio Suite chain. VST3 plugins run inside it — no separate engine.';
 
   useEffect(() => {
     loadMasterBypassFromServer();
-    loadProcessingModeFromServer();
     loadEngineSupportFromServer();
-  }, [loadMasterBypassFromServer, loadProcessingModeFromServer, loadEngineSupportFromServer]);
+  }, [loadMasterBypassFromServer, loadEngineSupportFromServer]);
 
   return (
     <RouteRail
@@ -613,7 +594,7 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
           route="tx"
           label={statusLabel}
           title={statusTitle}
-          muted={!vstMode}
+          muted
         />
       }
       actions={
@@ -623,19 +604,16 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
               OpenHPSDR-Zeus-org/openhpsdr-zeus-plugins, which no longer exists, so
               the button could only fail (issue #62). Plugins already installed keep
               working; Settings -> Plugins installs a package from a URL or file. */}
-          {/* VST mode: Windows downloads the out-of-process engine; macOS/Linux
-              host plugins in-process (AU/VST3), so the engine-download button —
-              which errors off Windows — is replaced by a Scan/Add affordance.
-              Wait for the platform DTO before committing, so macOS never flashes
-              the (erroring) engine button on the default Windows-shaped state. */}
-          {vstMode &&
-            engineSupportLoaded &&
-            (engineSupported ? <DownloadVstEngineButton /> : <InProcessPluginScanButton route="tx" />)}
+          {/* Scan/Add on EVERY platform. Windows used to get an engine-download
+              button here instead — and only in VST mode — which left Windows with
+              no way to add a VST3 at all (field, issue #62). The platform DTO
+              is awaited only so macOS shows 'Scan AU' rather than flashing the
+              generic label first. */}
+          {engineSupportLoaded && <InProcessPluginScanButton route="tx" />}
         </>
       }
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <ProcessingModeButton />
         <MasterBypassButton />
       </div>
       <div
@@ -657,12 +635,12 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
             flex: '0 0 auto',
           }}
         >
-          {vstMode ? 'TX VST chain' : 'TX chain'}
+          TX chain
         </span>
         <ChainStageChips
           slots={slots}
           bypassed={masterBypassed}
-          emptyText="No active TX VST plugins"
+          emptyText="No active TX plugins"
           bypassTitle="TX master bypass engaged — this stage is inert. Click BYPASS to engage the TX chain."
         />
       </div>
@@ -673,22 +651,14 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
 function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) {
   const rxMasterBypassed = useAudioSuiteStore((s) => s.rxMasterBypassed);
   const rxChainOrder = useAudioSuiteStore((s) => s.rxChainOrder);
-  const rxVstEngineAvailable = useAudioSuiteStore((s) => s.rxVstEngineAvailable);
-  const rxVstEngineActive = useAudioSuiteStore((s) => s.rxVstEngineActive);
-  const rxVstActivePlugins = useAudioSuiteStore((s) => s.rxVstActivePlugins);
-  const rxVstDegradedBlocks = useAudioSuiteStore((s) => s.rxVstDegradedBlocks);
   const loadRxChainOrderFromServer = useAudioSuiteStore((s) => s.loadRxChainOrderFromServer);
   const loadRxMasterBypassFromServer = useAudioSuiteStore(
     (s) => s.loadRxMasterBypassFromServer,
-  );
-  const loadRxProcessingModeFromServer = useAudioSuiteStore(
-    (s) => s.loadRxProcessingModeFromServer,
   );
   const loadEngineSupportFromServer = useAudioSuiteStore(
     (s) => s.loadEngineSupportFromServer,
   );
 
-  const engineSupported = useAudioSuiteStore((s) => s.engineSupported);
   const engineSupportLoaded = useAudioSuiteStore((s) => s.engineSupportLoaded);
 
   const slots = useMemo(() => {
@@ -703,28 +673,15 @@ function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
       }));
   }, [chainPanels, rxChainOrder]);
 
-  const statusLabel = rxVstEngineActive
-    ? 'VST ON'
-    : rxVstEngineAvailable
-      ? 'VST IDLE'
-      : 'VST OFF';
-  const statusTitle = rxVstEngineActive
-    ? `Receive VST engine active (${rxVstActivePlugins} plugin${rxVstActivePlugins === 1 ? '' : 's'}, ${rxVstDegradedBlocks} degraded blocks).`
-    : rxVstEngineAvailable
-      ? 'Receive VST engine is available but idle.'
-      : 'Receive VST engine is not installed.';
+  const statusLabel = 'NATIVE';
+  const statusTitle =
+    'Receive audio runs the in-process RX chain. VST3 plugins run inside it — no separate engine.';
 
   useEffect(() => {
     loadRxChainOrderFromServer();
     loadRxMasterBypassFromServer();
-    loadRxProcessingModeFromServer();
     loadEngineSupportFromServer();
-  }, [
-    loadRxChainOrderFromServer,
-    loadRxMasterBypassFromServer,
-    loadRxProcessingModeFromServer,
-    loadEngineSupportFromServer,
-  ]);
+  }, [loadRxChainOrderFromServer, loadRxMasterBypassFromServer, loadEngineSupportFromServer]);
 
   return (
     <RouteRail
@@ -735,21 +692,13 @@ function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
           route="rx"
           label={statusLabel}
           title={statusTitle}
-          muted={!rxVstEngineActive}
+          muted
         />
       }
       actions={
         <>
-          {/* Windows: RX audio is routed through the shared out-of-process VST
-              engine. When the engine is missing (rxVstEngineAvailable=false)
-              show the RX-scoped Download button so operators who only want RX
-              VST don't have to detour through the TX row (which also switches
-              TX to VST as a side effect — see issue #1276). The shared
-              installer button component handles the busy/failed/done UI.
-              macOS/Linux: RX inserts host in-process (AU on macOS, VST3
-              elsewhere), so surface the same Scan/Add affordance as TX. */}
-          {engineSupportLoaded &&
-            (engineSupported ? <DownloadVstEngineButton route="rx" /> : <InProcessPluginScanButton route="rx" />)}
+          {/* Scan/Add on every platform; RX VST3 plugins run in-process. */}
+          {engineSupportLoaded && <InProcessPluginScanButton route="rx" />}
           <SuiteButton route="rx" />
         </>
       }
@@ -847,60 +796,13 @@ function routeButtonStyle(active: boolean): CSSProperties {
   };
 }
 
-function ProcessingModeButton() {
-  const mode = useAudioSuiteStore((s) => s.processingMode);
-  const engineAvailable = useAudioSuiteStore((s) => s.vstEngineAvailable);
-  const engineActive = useAudioSuiteStore((s) => s.vstEngineActive);
-  const setProcessingMode = useAudioSuiteStore((s) => s.setProcessingMode);
-
-  const isVst = mode === 'vst';
-  const vstWarn = isVst && !engineActive;
-
-  const border = isVst ? (vstWarn ? 'var(--tx)' : 'var(--accent)') : 'var(--line)';
-  const background = isVst && !vstWarn ? 'var(--accent)' : 'var(--bg-2)';
-  const color = isVst ? (vstWarn ? 'var(--tx)' : '#fff') : 'var(--fg-2)';
-
-  const title = !isVst
-    ? 'Processing route: NATIVE — the in-process Audio Suite chain. Click to route TX mic audio through the out-of-process VST engine instead.'
-    : engineActive
-      ? 'Processing route: VST — TX mic audio runs through the out-of-process VST engine. Click to return to the native chain.'
-      : engineAvailable
-        ? 'VST route selected, but the engine is not routing yet. TX audio passes through clean meanwhile. Click to return to the native chain.'
-        : 'VST route selected, but no VST engine is installed. TX audio passes through clean. Click to return to the native chain.';
-
-  return (
-    <button
-      type="button"
-      onClick={() => setProcessingMode(isVst ? 'native' : 'vst')}
-      aria-pressed={isVst}
-      title={title}
-      style={{
-        padding: '4px 12px',
-        borderRadius: 4,
-        border: '1px solid ' + border,
-        background,
-        color,
-        cursor: 'pointer',
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: 0,
-        whiteSpace: 'nowrap',
-        minWidth: 72,
-        transition: 'background 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out',
-      }}
-    >
-      {isVst ? 'VST' : 'Native'}
-    </button>
-  );
-}
 
 /**
- * In-process plugin affordance for platforms where the out-of-process VST
- * engine is unavailable (macOS / Linux). On macOS this scans the OS
+ * In-process plugin affordance, on every platform. On macOS this scans the OS
  * AudioComponent registry for AUv2 effects and registers them into the given
- * route's insert chain in-process; on every platform it surfaces a path to
- * the suite where VST3 folders can be added (also in-process via the native
- * VST3 bridge). No engine download — that path errors off Windows.
+ * route's insert chain in-process; everywhere it opens the suite where VST3
+ * folders are added and scanned (hosted in-process by the native VST3 bridge).
+ * There is no engine download: the separate engine is retired in ANAN Core.
  */
 function InProcessPluginScanButton({ route }: { route: AudioRoute }) {
   const auSupported = useAudioSuiteStore((s) => s.auSupported);

@@ -853,8 +853,10 @@ function PluginSidebar({
         )}
       </div>
 
-      {/* Footer — VST3 scan controls. Only shown on the VST route: in Native
-          mode VSTs aren't part of the chain, so there's nothing to scan for. */}
+      {/* Footer — VST3 scan controls. Shown in both suites: VST3 plugins run
+          in-process in the Native chain. (They used to be hidden from the TX
+          suite unless the retired VST mode was on — on Windows that left no
+          way to add a VST3 at all.) */}
       {vstMode && (
         <div
           style={{
@@ -1018,7 +1020,6 @@ export function AudioSuiteWindow({
   const uninstallPlugin = useAudioSuiteStore((s) => s.uninstallPlugin);
   const favoriteVstIds = useAudioSuiteStore((s) => s.favoriteVstIds);
   const toggleFavoriteVst = useAudioSuiteStore((s) => s.toggleFavoriteVst);
-  const processingMode = useAudioSuiteStore((s) => s.processingMode);
   const loadProcessingModeFromServer = useAudioSuiteStore(
     (s) => s.loadProcessingModeFromServer,
   );
@@ -1075,17 +1076,13 @@ export function AudioSuiteWindow({
     () => allPanels.filter((p) => p.slot === RX_CHAIN_SLOT),
     [allPanels],
   );
-  // TX Native and TX VST are mutually-exclusive processing routes, so the TX
-  // suite only surfaces the plugins the active route actually runs. RX is a
-  // separate receive-side VST insert chain, so it always shows RX VST panels
-  // regardless of the TX suite's Native/VST selector.
-  const vstRack = isRxSuite || processingMode === 'vst';
+  // One route per suite. The separate VST engine — and the Native/VST selector
+  // that used to hide VST panels from the TX suite in Native mode — is retired
+  // in ANAN Core: VST3 plugins run in-process inside the Native chain. So each
+  // suite shows every panel its chain can hold, built-in and VST together.
   const modePanels = useMemo(
-    () =>
-      isRxSuite
-        ? rxChainSlotPanels
-        : txChainSlotPanels.filter((p) => (p.editorBacked === true) === vstRack),
-    [isRxSuite, rxChainSlotPanels, txChainSlotPanels, vstRack],
+    () => (isRxSuite ? rxChainSlotPanels : txChainSlotPanels),
+    [isRxSuite, rxChainSlotPanels, txChainSlotPanels],
   );
   const activeOrder = isRxSuite ? rxChainOrder : chainOrder;
   const reorderActiveChain = isRxSuite ? reorderRxChain : reorderChain;
@@ -1881,7 +1878,7 @@ export function AudioSuiteWindow({
             </option>
             {profiles.map((p) => (
               <option key={p.name} value={p.name}>
-                {p.name} [{p.processingMode === 'vst' ? 'VST' : 'Native'}]
+                {p.name}
               </option>
             ))}
           </select>
@@ -1978,7 +1975,7 @@ export function AudioSuiteWindow({
           scanning={scanning}
           favoriteVstIds={favoriteVstIdSet}
           onToggleFavorite={toggleFavoriteVst}
-          vstMode={vstRack}
+          vstMode
           embedded={embedded}
         />
 
