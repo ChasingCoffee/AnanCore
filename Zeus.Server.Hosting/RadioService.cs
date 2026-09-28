@@ -1239,7 +1239,7 @@ public sealed class RadioService : IDisposable
             // snapping to VfoHz on legacy rows, so a plain SetVfoAHz here is
             // always valid. See docs/prd/panfall_behavior.md.
             var connectSnap = Snapshot();
-            client.SetVfoAHz(connectSnap.RadioLoHz);
+            client.SetVfoAHz(Transverters.HardwareHz(connectSnap.RadioLoHz));
 
             // Default-on the N2ADR 7-relay filter board for HL2 — mirrors
             // Thetis's HERCULES preset (setup.cs:14642). Most HL2 deployments
@@ -1362,7 +1362,7 @@ public sealed class RadioService : IDisposable
 
     public StateDto SetVfoB(long hz)
     {
-        long clamped = Math.Clamp(hz, 0L, 60_000_000L);
+        long clamped = Transverters.ClampTune(hz);
         lock (_sync) { if (_state.VfoLocked) return Snapshot(); }
         long previousTx;
         lock (_sync) previousTx = TxFrequencyHzLocked(_state);
@@ -1466,7 +1466,7 @@ public sealed class RadioService : IDisposable
         lock (_sync)
         {
             var e = _extraReceivers[index];
-            if (vfoHz is long v) e.VfoHz = Math.Clamp(v, 0L, 60_000_000L);
+            if (vfoHz is long v) e.VfoHz = Transverters.ClampTune(v);
             if (adcSource is byte a) e.AdcSource = a;
             if (mode is RxMode m) e.Mode = m;
             if (filterLowHz is int fl) e.FilterLowHz = fl;
@@ -1521,7 +1521,7 @@ public sealed class RadioService : IDisposable
         {
             var rx2 = s.Rx2();
             long nextVfoB = req.VfoBHz.HasValue
-                ? Math.Clamp(req.VfoBHz.Value, 0L, 60_000_000L)
+                ? Transverters.ClampTune(req.VfoBHz.Value)
                 : rx2.VfoHz > 0
                     ? rx2.VfoHz
                     : s.VfoHz;
@@ -1626,9 +1626,9 @@ public sealed class RadioService : IDisposable
         Mutate(s =>
         {
             previousTx = TxFrequencyHzLocked(s);
-            newA = Math.Clamp(s.Rx2().VfoHz, 0L, 60_000_000L);
+            newA = Transverters.ClampTune(s.Rx2().VfoHz);
             mode = s.Mode;
-            long oldA = Math.Clamp(s.VfoHz, 0L, 60_000_000L);
+            long oldA = Transverters.ClampTune(s.VfoHz);
             return WithRx2(
                 s with
                 {
@@ -1637,7 +1637,7 @@ public sealed class RadioService : IDisposable
                 },
                 r => r with { VfoHz = oldA });
         });
-        ActiveClient?.SetVfoAHz(CwOffset.EffectiveLoHz(mode, newA));
+        ActiveClient?.SetVfoAHz(Transverters.HardwareHz(CwOffset.EffectiveLoHz(mode, newA)));
         if (BandUtils.FreqToBand(previousTx) != BandUtils.FreqToBand(TxFrequencyHz(Snapshot())))
         {
             RecomputePaAndPush();
@@ -1672,7 +1672,7 @@ public sealed class RadioService : IDisposable
     /// </summary>
     public StateDto SetVfo(long hz, bool fromExternal)
     {
-        long clamped = Math.Clamp(hz, 0L, 60_000_000L);
+        long clamped = Transverters.ClampTune(hz);
         // VFO lock guards operator dial tuning only. External sources
         // (CAT/TCI/calibration) tune intentionally and bypass the lock, matching
         // Thetis (chkVFOLock blocks the UI/knob, not CAT). No-op return preserves
@@ -1725,7 +1725,7 @@ public sealed class RadioService : IDisposable
         // pitch), which leaves the WDSP CTUN-shift stage at zero.
         long radioLoNew = CwOffset.EffectiveLoHz(currentMode, clamped);
         Mutate(s => s with { VfoHz = clamped, RadioLoHz = radioLoNew });
-        ActiveClient?.SetVfoAHz(radioLoNew);
+        ActiveClient?.SetVfoAHz(Transverters.HardwareHz(radioLoNew));
         // Band edge crossed? Per-band PA gain / OC bits may have swapped — push
         // the new snapshot before the next TX frame ships. Cheap when no
         // crossing occurred (same bytes re-pushed). Also recall the new band's
@@ -1778,7 +1778,7 @@ public sealed class RadioService : IDisposable
     /// <summary>
     /// Set the radio's hardware NCO (LO) centre frequency in Hz, leaving
     /// VfoHz untouched. Returns the updated <see cref="StateDto"/>.
-    /// Out-of-range values are clamped to [0, 60_000_000]; callers wanting
+    /// Out-of-range values are clamped by Transverters.ClampTune (0-60 MHz, or an enabled transverter band); callers wanting
     /// strict rejection should validate before calling. Triggers a P1 client
     /// SetVfoAHz (and the P2 path via DspPipelineService.OnRadioStateChanged
     /// reading the new RadioLoHz), and a PA recompute if the LO crossed a
@@ -1800,11 +1800,11 @@ public sealed class RadioService : IDisposable
 
     private StateDto SetRadioLoUnchecked(long hz)
     {
-        long clamped = Math.Clamp(hz, 0L, 60_000_000L);
+        long clamped = Transverters.ClampTune(hz);
         long previous;
         lock (_sync) { previous = _state.RadioLoHz; }
         Mutate(s => s with { RadioLoHz = clamped });
-        ActiveClient?.SetVfoAHz(clamped);
+        ActiveClient?.SetVfoAHz(Transverters.HardwareHz(clamped));
         if (BandUtils.FreqToBand(previous) != BandUtils.FreqToBand(clamped))
         {
             RecomputePaAndPush();
@@ -2248,8 +2248,8 @@ public sealed class RadioService : IDisposable
             //    Non-CW↔non-CW transitions return 0, so SSB/AM/FM/DIG
             //    behaviour is unchanged.
             long bump = CwOffset.DialBumpForModeTransition(currentMode, mode);
-            long nextVfoA = targetB ? s.VfoHz : Math.Clamp(s.VfoHz + bump, 0L, 60_000_000L);
-            long nextVfoB = targetB ? Math.Clamp(rx2.VfoHz + bump, 0L, 60_000_000L) : rx2.VfoHz;
+            long nextVfoA = targetB ? s.VfoHz : Transverters.ClampTune(s.VfoHz + bump);
+            long nextVfoB = targetB ? Transverters.ClampTune(rx2.VfoHz + bump) : rx2.VfoHz;
             newVfoAHz = nextVfoA;
 
             if (targetB)
@@ -2289,7 +2289,7 @@ public sealed class RadioService : IDisposable
         // pushed via DspPipelineService.OnRadioStateChanged.
         if (!targetBAtSet)
         {
-            ActiveClient?.SetVfoAHz(CwOffset.EffectiveLoHz(mode, newVfoAHz));
+            ActiveClient?.SetVfoAHz(Transverters.HardwareHz(CwOffset.EffectiveLoHz(mode, newVfoAHz)));
             // Entering/leaving CW toggles the P2 internal keyer (TxSpecific
             // byte-5 CW-select). Re-push so a paddle keys the radio the moment
             // the operator is in CW, and the bit clears on the way back to

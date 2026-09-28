@@ -1975,7 +1975,7 @@ public static class ZeusEndpoints
         // See docs/prd/panfall_behavior.md.
         app.MapPost("/api/radio/lo", (RadioLoSetRequest req, RadioService r) =>
         {
-            if (req.Hz < 0 || req.Hz > 60_000_000)
+            if (!Transverters.IsTunable(req.Hz))
             {
                 log.LogInformation("api.radio.lo rejected hz={Hz}", req.Hz);
                 return Results.BadRequest(new { error = "hz out of range [0, 60000000]" });
@@ -1992,7 +1992,7 @@ public static class ZeusEndpoints
         {
             if (index < 0 || index > Zeus.Contracts.WireContract.KiwiReceiverIndex)
                 return Results.BadRequest(new { error = $"receiver index out of range (0..{Zeus.Contracts.WireContract.KiwiReceiverIndex})" });
-            if (req.Hz < 0 || req.Hz > 60_000_000)
+            if (!Transverters.IsTunable(req.Hz))
             {
                 log.LogInformation("api.receivers.lo rejected index={Index} hz={Hz}", index, req.Hz);
                 return Results.BadRequest(new { error = "hz out of range [0, 60000000]" });
@@ -3583,6 +3583,18 @@ public static class ZeusEndpoints
         // GET returns the per-band TX/RX antenna + RX-aux selection plus the
         // board-capability gates the frontend renders the right selectors from.
         // Antenna state is server-authoritative and NEVER enters StateDto.
+        // Transverter bands (piHPSDR model): the operator tunes RF; the radio is
+        // sent RF - LO. PUT validates, persists, applies, then re-pushes the
+        // current frequency so a change to the band you are on takes effect.
+        app.MapGet("/api/radio/transverters", (TransverterStore store) => Results.Ok(store.Get()));
+        app.MapPut("/api/radio/transverters", (TransverterSettingsDto req, TransverterStore store, RadioService radio) =>
+        {
+            if (store.Set(req?.Bands ?? []) is string err) return Results.BadRequest(new { error = err });
+            var snap = radio.Snapshot();
+            radio.SetVfo(Transverters.ClampTune(snap.VfoHz));
+            return Results.Ok(store.Get());
+        });
+
         app.MapGet("/api/radio/antenna", (RadioService radio, AntennaSettingsStore store) =>
         {
             var caps = BoardCapabilitiesTable.For(radio.EffectiveBoardKind, radio.EffectiveOrionMkIIVariant);
@@ -3611,7 +3623,7 @@ public static class ZeusEndpoints
         {
             if (req is null || string.IsNullOrWhiteSpace(req.Band))
                 return Results.BadRequest(new { error = "band required" });
-            if (!BandUtils.HfBands.Contains(req.Band))
+            if (!BandUtils.AllBands.Contains(req.Band))
                 return Results.BadRequest(new { error = $"unknown band '{req.Band}'" });
             if (!Enum.TryParse<HpsdrAntenna>(req.TxAnt, ignoreCase: true, out var txAnt))
                 return Results.BadRequest(new { error = $"unknown txAnt '{req.TxAnt}'" });

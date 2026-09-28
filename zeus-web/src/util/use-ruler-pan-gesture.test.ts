@@ -28,9 +28,11 @@ describe('rulerDragTargetHz', () => {
     expect(rulerDragTargetHz(28_000_000, 500, -700, 1000, 100_000)).toBe(28_120_000);
   });
 
-  it('clamps to the supported radio range', () => {
+  it('clamps to the dial range (0 to 10 GHz; the server applies the radio/transverter rule)', () => {
     expect(rulerDragTargetHz(1000, 0, 100, 100, 10_000)).toBe(0);
-    expect(rulerDragTargetHz(59_999_000, 100, 0, 100, 10_000)).toBe(60_000_000);
+    // Above 60 MHz is now a valid dial value (transverter bands) — not clamped here.
+    expect(rulerDragTargetHz(59_999_000, 100, 0, 100, 10_000)).toBe(60_009_000);
+    expect(rulerDragTargetHz(9_999_999_000, 100, 0, 100, 10_000)).toBe(10_000_000_000);
   });
 });
 

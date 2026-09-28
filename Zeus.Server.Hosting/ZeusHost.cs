@@ -890,6 +890,7 @@ public static class ZeusHost
         // BandPrefsStore persists current region + TX-guard override.
         builder.Services.AddSingleton<BandPlanStore>();
         builder.Services.AddSingleton<BandPrefsStore>();
+        builder.Services.AddSingleton<TransverterStore>();
         builder.Services.AddSingleton<BandPlanService>();
         builder.Services.AddSingleton<IBandPlanService>(sp => sp.GetRequiredService<BandPlanService>());
 
@@ -1391,6 +1392,8 @@ public static class ZeusHost
         // the initializer currently reports (Idle/empty at first boot, Ready on
         // restart once the file is cached).
         {
+            // Transverter bands must be live before the first tune.
+            app.Services.GetRequiredService<TransverterStore>();
             var wisdom = app.Services.GetRequiredService<WdspWisdomInitializer>();
             var hub = app.Services.GetRequiredService<StreamingHub>();
             hub.SetWisdomPhase(wisdom.Phase);

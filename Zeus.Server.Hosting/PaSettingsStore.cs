@@ -90,7 +90,7 @@ public sealed class PaSettingsStore : IDisposable
                 : new PaGlobalSettingsDto(g.PaEnabled, g.PaMaxPowerWatts);
 
             var existing = _bands.FindAll().ToDictionary(e => e.Band, e => e);
-            var bands = BandUtils.HfBands
+            var bands = BandUtils.AllBands
                 .Select(b =>
                 {
                     var auto = AutoOcMaskFor(board, b);
@@ -119,7 +119,7 @@ public sealed class PaSettingsStore : IDisposable
         var global = new PaGlobalSettingsDto(
             PaEnabled: true,
             PaMaxPowerWatts: PaDefaults.GetMaxPowerWatts(board, variant));
-        var bands = BandUtils.HfBands
+        var bands = BandUtils.AllBands
             .Select(b => new PaBandSettingsDto(
                 b,
                 PaGainDb: PaDefaults.GetPaGainDb(board, b, variant),
@@ -221,7 +221,7 @@ public sealed class PaSettingsStore : IDisposable
 
             foreach (var band in dto.Bands)
             {
-                if (!BandUtils.HfBands.Contains(band.Band)) continue;
+                if (!BandUtils.AllBands.Contains(band.Band)) continue;
                 var existing = _bands.FindOne(x => x.Band == band.Band);
                 // DX masks are 4-bit per the EU2AV spec (bits 0..3 ->
                 // DX OUT 7..10); narrow to 0x0F before persisting so the

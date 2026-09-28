@@ -40,7 +40,18 @@ public static class BandUtils
     /// how N2adrBands.RxOcMask() keeps filters engaged off-band.
     /// Returns null below 160m or above 6m.
     /// </summary>
-    public static string? FreqToBand(long vfoHz) => vfoHz switch
+    public static string? FreqToBand(long vfoHz) =>
+        Transverters.TryFind(vfoHz, out var xvtr) ? xvtr.Name : HfFreqToBand(vfoHz);
+
+    /// <summary>
+    /// HF bands plus the enabled transverter bands. Per-band stores (PA,
+    /// antenna) accept all of these, so a transverter band gets PA-disable,
+    /// open-collector bits, antennas and the XVTR input with no new mechanism.
+    /// </summary>
+    public static IReadOnlyList<string> AllBands =>
+        HfBands.Concat(Transverters.Enabled.Select(b => b.Name)).ToArray();
+
+    private static string? HfFreqToBand(long vfoHz) => vfoHz switch
     {
         <   1_800_000 => null,
         <   3_500_000 => "160m",

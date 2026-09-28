@@ -5799,7 +5799,9 @@ export function disconnectP3(signal?: AbortSignal): Promise<unknown> {
 // panadapter/waterfall blank out (issue #1191). Round + clamp at this single
 // wire seam so NO caller can emit a non-integer or out-of-range LO. Rounding is
 // sub-Hz on the LO — far below the radio's tuning resolution, no audible effect.
-const MAX_LO_HZ = 60_000_000;
+// Dial ceiling (10 GHz, for transverter bands); the server applies the real
+// rule (the radio's 60 MHz, or an enabled transverter band).
+const MAX_LO_HZ = 10_000_000_000;
 export function toWireHz(hz: number): number {
   if (!Number.isFinite(hz)) return 0;
   return Math.min(MAX_LO_HZ, Math.max(0, Math.round(hz)));
@@ -8417,4 +8419,35 @@ export async function startXdmaRx(rateKhz: number, hz: number): Promise<XdmaRxSt
 
 export async function stopXdmaRx(): Promise<XdmaRxStatus> {
   return jsonFetch('/api/xdma/rx/stop', { method: 'POST' }, normalizeXdmaRx);
+}
+
+
+// ---- Transverters (piHPSDR model): tune RF, the radio is sent RF - LO. ----
+export type TransverterBand = {
+  id: number;
+  enabled: boolean;
+  name: string;
+  minHz: number;
+  maxHz: number;
+  loHz: number;
+  loErrorHz: number;
+};
+
+export async function getTransverters(): Promise<TransverterBand[]> {
+  const res = await fetch('/api/radio/transverters');
+  if (!res.ok) throw new Error(`transverters ${res.status}`);
+  const body = (await res.json()) as { bands?: TransverterBand[] };
+  return body.bands ?? [];
+}
+
+/** Resolves to the saved bands, or rejects with the server's validation message. */
+export async function setTransverters(bands: TransverterBand[]): Promise<TransverterBand[]> {
+  const res = await fetch('/api/radio/transverters', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bands }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { bands?: TransverterBand[]; error?: string };
+  if (!res.ok) throw new Error(body.error ?? `transverters ${res.status}`);
+  return body.bands ?? [];
 }

@@ -62,7 +62,8 @@ import { applyCtunZoomCenterAfterState, centerCtunForZoomIn, centerKiwiForZoomIn
 // The arrow-key tune step follows the operator's TuningStepWidget choice
 // (toolbar-favorites-store.stepHz). Read at event time inside bumpTune so
 // it picks up changes without re-mounting the hook.
-const MAX_HZ = 60_000_000;
+// Dial ceiling (10 GHz, transverter bands); the server applies the real rule.
+const MAX_HZ = 10_000_000_000;
 
 function snapHz(hz: number, step: number): number {
   if (!Number.isFinite(hz)) return 0;

@@ -548,9 +548,12 @@ describe('POST helpers', () => {
       expect(toWireHz(7_100_000.4)).toBe(7_100_000);
       expect(toWireHz(7_100_000.5)).toBe(7_100_001);
     });
-    it('clamps to the supported radio range', () => {
+    it('clamps to the dial range (the server applies the radio/transverter rule)', () => {
       expect(toWireHz(-5)).toBe(0);
-      expect(toWireHz(99_000_000)).toBe(60_000_000);
+      // Above 60 MHz is a valid request now (transverter bands); the server
+      // accepts it only on an enabled band and converts RF to IF itself.
+      expect(toWireHz(99_000_000)).toBe(99_000_000);
+      expect(toWireHz(20_000_000_000)).toBe(10_000_000_000);
     });
     it('coerces non-finite values to 0 (never NaN/Infinity on the wire)', () => {
       expect(toWireHz(Number.NaN)).toBe(0);

@@ -159,7 +159,7 @@ public sealed class SaturnRxStream : IDisposable
         if (!Running) return;
         try
         {
-            _control.SetDdcFrequency(0, s.RadioLoHz, out _);
+            _control.SetDdcFrequency(0, Transverters.HardwareHz(s.RadioLoHz), out _);
             lock (_lock) { _tunedHz = s.RadioLoHz; }
             // EffectiveAttenDb lives on RadioService, not StateDto — the same
             // property ConnectP2Async seeds the P2 client from.
@@ -308,7 +308,7 @@ public sealed class SaturnRxStream : IDisposable
             var h = bar.SafeFileHandle;
 
             // ---- init sequence, per p2app ----
-            _control.SetDdcFrequency(0, tuneHz, out _);          // tune DDC0
+            _control.SetDdcFrequency(0, Transverters.HardwareHz(tuneHz), out _);   // tune DDC0 (RF -> IF)
             _control.SetRxAtten(Math.Clamp(_radio.EffectiveAttenDb, 0, 31), out _);
             // 4b.4 postmortem: dither+random ON raised the no-antenna floor
             // to near full scale (-1 dBm) — under a two-authority-verified

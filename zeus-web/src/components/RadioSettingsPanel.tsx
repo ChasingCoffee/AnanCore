@@ -25,6 +25,7 @@
 // are the maintainer's call — this stays clean and minimal.
 
 import { useEffect, useState } from 'react';
+import { TransverterSettingsPanel } from './TransverterSettingsPanel';
 import { usePttStore } from '../state/ptt-store';
 import { useG2PanelStore } from '../state/g2panel-store';
 import { useAudioStore, type TxAudioSource } from '../state/audio-store';
@@ -777,6 +778,7 @@ export function RadioSettingsPanel() {
           </div>
         </div>
       )}
+      <TransverterSettingsPanel />
     </div>
   );
 }

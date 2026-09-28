@@ -207,6 +207,10 @@ public sealed class TxService
         var txHz = RadioService.TxFrequencyHz(state);
         if (_bandPlan.InBand(txHz, state.Mode)) { error = null; return true; }
         var seg = _bandPlan.GetSegment(txHz);
+        // A transverter band the region's plan doesn't cover at all is the
+        // operator's own configured band — allow it. Where the plan DOES have
+        // a segment there, its restrictions still apply at RF.
+        if (seg is null && Transverters.TryFind(txHz, out _)) { error = null; return true; }
         var segLabel = seg is not null
             ? $"{seg.Label} ({seg.ModeRestriction})"
             : "no amateur allocation";

@@ -81,7 +81,7 @@ public sealed class AntennaSettingsStore : IDisposable
         lock (_sync)
         {
             var existing = _bands.FindAll().ToDictionary(e => e.Band, e => e);
-            return BandUtils.HfBands
+            return BandUtils.AllBands
                 .Select(b => existing.TryGetValue(b, out var e)
                     ? new AntennaBandSelection(b, ClampAnt(e.TxAnt), ClampAnt(e.RxAnt), ClampAux(e.RxAux))
                     : new AntennaBandSelection(b, HpsdrAntenna.Ant1, HpsdrAntenna.Ant1, RxAuxInputSel.None))
@@ -101,7 +101,7 @@ public sealed class AntennaSettingsStore : IDisposable
     /// hydrate RxAux as 0 = None.</summary>
     public void SetBand(string band, HpsdrAntenna txAnt, HpsdrAntenna rxAnt, RxAuxInputSel rxAux)
     {
-        if (!BandUtils.HfBands.Contains(band)) return;
+        if (!BandUtils.AllBands.Contains(band)) return;
         lock (_sync)
         {
             var existing = _bands.FindOne(x => x.Band == band);

@@ -43,7 +43,7 @@
 // Zeus is distributed WITHOUT ANY WARRANTY; see the GNU General Public
 // License for details.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchBandMemory,
   saveBandMemory,
@@ -55,6 +55,7 @@ import {
   type RxMode,
 } from '../api/client';
 import { useConnectionStore } from '../state/connection-store';
+import { useTransverterStore, transverterFor } from '../state/transverter-store';
 import {
   BAND_MEMORY_UPDATED_EVENT,
   type BandMemoryUpdatedDetail,
@@ -107,6 +108,27 @@ export function BandButtons({ rxIndex = 0 }: { rxIndex?: number } = {}) {
     rxIndex === 0 ? s.mode : (s.receivers[rxIndex]?.mode ?? s.mode),
   );
   const applyState = useConnectionStore((s) => s.applyState);
+
+  // Transverter bands join the HF list (piHPSDR: they are rows in the band
+  // table). First tap goes to the band start; band memory takes over after.
+  const xvtrBands = useTransverterStore((s) => s.bands);
+  const loadXvtr = useTransverterStore((s) => s.load);
+  useEffect(() => {
+    if (!useTransverterStore.getState().loaded) void loadXvtr();
+  }, [loadXvtr]);
+  const bands = useMemo<readonly BandEntry[]>(
+    () => [
+      ...HF_BANDS,
+      ...xvtrBands
+        .filter((b) => b.enabled)
+        .map((b) => ({ name: b.name, centerHz: b.minHz, rangeStart: b.minHz, rangeEnd: b.maxHz })),
+    ],
+    [xvtrBands],
+  );
+  const bandOfAny = useCallback(
+    (hz: number) => transverterFor(hz, xvtrBands)?.name ?? bandOf(hz),
+    [xvtrBands],
+  );
 
   const [currentBand, setCurrentBand] = useState<string>(() => bandOf(vfoHz));
 
@@ -180,7 +202,7 @@ export function BandButtons({ rxIndex = 0 }: { rxIndex?: number } = {}) {
   // remembered mode is preserved from DB/user mode changes, never inferred
   // from transient mode snapshots during band switching.
   useEffect(() => {
-    const band = bandOf(vfoHz);
+    const band = bandOfAny(vfoHz);
     setCurrentBand(band);
     if (rxIndex !== 0) return; // highlight follows; memory writes are primary-only
     if (lastBandRef.current !== band) {
@@ -192,7 +214,7 @@ export function BandButtons({ rxIndex = 0 }: { rxIndex?: number } = {}) {
     pendingSaveRef.current = { band, hz: vfoHz };
     clearSaveTimer();
     saveTimerRef.current = window.setTimeout(flushPendingSave, SAVE_DEBOUNCE_MS);
-  }, [clearSaveTimer, flushPendingSave, rxIndex, vfoHz]);
+  }, [bandOfAny, clearSaveTimer, flushPendingSave, rxIndex, vfoHz]);
 
   const selectBand = useCallback(
     (band: BandEntry) => {
@@ -262,7 +284,7 @@ export function BandButtons({ rxIndex = 0 }: { rxIndex?: number } = {}) {
           narrows. */}
       <div className="ctrl-group hide-mobile" style={{ width: '100%' }}>
         <div className="btn-row wrap" style={{ width: '100%' }}>
-          {HF_BANDS.map((band) => (
+          {bands.map((band) => (
             <button
               key={band.name}
               type="button"
@@ -286,7 +308,7 @@ export function BandButtons({ rxIndex = 0 }: { rxIndex?: number } = {}) {
         <select
           value={currentBand}
           onChange={(e) => {
-            const band = HF_BANDS.find((b) => b.name === e.target.value);
+            const band = bands.find((b) => b.name === e.target.value);
             if (band) selectBand(band);
           }}
           className="band-select"
@@ -301,7 +323,7 @@ export function BandButtons({ rxIndex = 0 }: { rxIndex?: number } = {}) {
             cursor: 'pointer',
           }}
         >
-          {HF_BANDS.map((band) => (
+          {bands.map((band) => (
             <option key={band.name} value={band.name}>
               {band.name}
             </option>

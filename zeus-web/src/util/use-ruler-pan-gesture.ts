@@ -30,7 +30,8 @@ import { isWidebandDisplayGeometry, resolveSpectrumViewport } from './wideband-v
 
 type SpectrumReceiver = ReceiverKey;
 
-const MAX_HZ = 60_000_000;
+// Dial ceiling (10 GHz, transverter bands); the server applies the real rule.
+const MAX_HZ = 10_000_000_000;
 const CLICK_SLOP_PX = 3;
 
 function clampHz(hz: number): number {

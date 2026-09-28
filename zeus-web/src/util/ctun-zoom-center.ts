@@ -23,7 +23,8 @@ import { useConnectionStore } from '../state/connection-store';
 import { getReceiverVfoHz, KIWI_RECEIVER_INDEX, rxIndexOf, type ReceiverKey } from '../state/receiver-state';
 import * as viewCenter from '../state/view-center';
 
-const MAX_HZ = 60_000_000;
+// Dial ceiling (10 GHz, transverter bands); the server applies the real rule.
+const MAX_HZ = 10_000_000_000;
 
 function clampHz(hz: number): number {
   if (!Number.isFinite(hz)) return 0;

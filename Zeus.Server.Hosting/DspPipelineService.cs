@@ -4340,7 +4340,7 @@ public class DspPipelineService : BackgroundService,
         // RadioLoHz to the P2 client (the P1 client gets the same push from
         // RadioService.SetRadioLo). See docs/prd/panfall_behavior.md.
         var p2 = _p2Client;
-        p2?.SetVfoAHz(s.RadioLoHz);
+        p2?.SetVfoAHz(Transverters.HardwareHz(s.RadioLoHz));
         p2?.SetReceiverAdcSources(ReceiverAdcSource(s, 0), ReceiverAdcSource(s, 1));
         // Diversity = the gateware-synchronised DDC0/DDC1 pair, DDC1 on the
         // second ADC. Only meaningful on a dual-ADC board; the P2 client also
@@ -4361,7 +4361,7 @@ public class DspPipelineService : BackgroundService,
         // panel holds still while VFO B roams under CTUN. The WDSP shift in
         // ApplyStateToRx2Channel moves the dial within that window.
         UpdateRxLo(1, s);
-        p2?.SetVfoBHz(_secondaryRx[1].LoHz);
+        p2?.SetVfoBHz(Transverters.HardwareHz(_secondaryRx[1].LoHz));
 
         // Dual-RX split TX: when VFO B is the TX VFO and RX2 is on, drive the TX
         // DUC to VFO B's effective LO (the same centre RX2 sits on) INDEPENDENTLY
@@ -4377,8 +4377,8 @@ public class DspPipelineService : BackgroundService,
         // DUC NCO (byte 329) and the alex TX low-pass derive from this, so they
         // always agree.
         bool splitTxToVfoB = s.TxVfo == TxVfo.B && s.Rx2Enabled;
-        p2?.SetTxDucFrequency(
-            splitTxToVfoB ? CwOffset.EffectiveLoHz(s.Mode, RadioService.TxFrequencyHz(s)) : 0);
+        p2?.SetTxDucFrequency(Transverters.HardwareHz(
+            splitTxToVfoB ? CwOffset.EffectiveLoHz(s.Mode, RadioService.TxFrequencyHz(s)) : 0));
 
         // Issue #597 Phase 0: arm the RX display fast-attack when the LO
         // moves. First callback after construction only records the LO
@@ -4427,7 +4427,7 @@ public class DspPipelineService : BackgroundService,
                 for (int ri = 2; ri <= 1 + extraCount; ri++)
                 {
                     UpdateRxLo(ri, s);
-                    p2.SetExtraReceiverFreqHz(ri, _secondaryRx[ri].LoHz);
+                    p2.SetExtraReceiverFreqHz(ri, Transverters.HardwareHz(_secondaryRx[ri].LoHz));
                 }
             }
             else
@@ -5313,7 +5313,9 @@ public class DspPipelineService : BackgroundService,
     {
         if (rxIndex < 1 || rxIndex >= MaxReceivers) return;
         if (_p2Client is null) return; // P1 secondaries share RadioLoHz — not pannable
-        long clamped = Math.Clamp(hz, 0L, 60_000_000L);
+        // Operator input (RX2 pan drag) in RF: the radio's range or a transverter
+        // band. Converted to IF at the SetVfoBHz write, like every other write.
+        long clamped = Transverters.ClampTune(hz);
         lock (_engineLock)
         {
             var s = _radio.Snapshot();
@@ -5815,7 +5817,19 @@ public class DspPipelineService : BackgroundService,
             snap.HasTxAntennaRelays,
             snap.RxAuxInput,
             snap.MkiiBpfRxSelect);
+        // XVTR port (piHPSDR new_protocol.c, Orion2/Saturn): when the band's RX
+        // input is the XVTR jack, set XVTR_OUT (byte 1400 bit 0). The firmware
+        // ANDs it with T/R, so the XVTR port receives on RX and carries the TX
+        // output on TX. Only on a change: each call sends a high-priority packet.
+        bool xvtrOut = snap.RxAuxInput == 3 && _radio.ConnectedBoardKind == HpsdrBoardKind.OrionMkII;
+        if (xvtrOut != _xvtrOutApplied)
+        {
+            _xvtrOutApplied = xvtrOut;
+            p2.SetXvtrEnabled(xvtrOut);
+        }
     }
+
+    private bool _xvtrOutApplied;
 
     private void OnAudioFrontEndChanged(AudioFrontEndPush a)
     {

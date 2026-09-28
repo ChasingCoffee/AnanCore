@@ -43,6 +43,7 @@
 // Zeus is distributed WITHOUT ANY WARRANTY; see the GNU General Public
 // License for details.
 
+import { useTransverterStore, transverterFor, transverterIfHz } from '../state/transverter-store';
 import {
   Fragment,
   type CSSProperties,
@@ -61,7 +62,8 @@ import {
 import { useVfoLockStore } from '../state/vfo-lock-store';
 import { receiverColorByIndex, type SpectrumReceiverId } from './spectrumReceiverColor';
 
-const MAX_HZ = 60_000_000;
+// Dial ceiling: 10 GHz for transverter bands; the server enforces the real rule.
+const MAX_HZ = 10_000_000_000;
 
 type DigitPlace = {
   decade: number;
@@ -78,6 +80,17 @@ const DIGIT_PLACES: readonly DigitPlace[] = [
   { decade: 10 },
   { decade: 1 },
 ];
+
+// Above 100 MHz (transverter bands) the display grows digit places — 100 MHz,
+// then 1 GHz with a separator, then 10 GHz. HF keeps its eight places exactly.
+export function digitPlacesFor(hz: number): readonly DigitPlace[] {
+  if (hz < 100_000_000) return DIGIT_PLACES;
+  const extra: DigitPlace[] = [];
+  if (hz >= 10_000_000_000) extra.push({ decade: 10_000_000_000 });
+  if (hz >= 1_000_000_000) extra.push({ decade: 1_000_000_000, separatorAfter: '.' });
+  extra.push({ decade: 100_000_000 });
+  return [...extra, ...DIGIT_PLACES];
+}
 
 function clampHz(hz: number): number {
   if (!Number.isFinite(hz)) return 0;
@@ -144,6 +157,8 @@ export function VfoDisplay({
   const targetIndex = resolveTargetIndex(receiver, rxIndex);
   const resolvedLabel = label ?? `RX${targetIndex + 1}`;
   const vfoHz = useConnectionStore((s) => getReceiverVfoHz(s, targetIndex));
+  const xvtrBands = useTransverterStore((s) => s.bands);
+  const xvtr = transverterFor(vfoHz, xvtrBands);
   const applyState = useConnectionStore((s) => s.applyState);
   const locked = useVfoLockStore((s) => s.locked);
   const postVfo = useCallback(
@@ -361,7 +376,7 @@ export function VfoDisplay({
             width: '100%',
           }}
         >
-          {DIGIT_PLACES.map((place) => {
+          {digitPlacesFor(vfoHz).map((place) => {
             const d = digitAt(vfoHz, place.decade);
             const isLeading = vfoHz < place.decade;
             return (
@@ -384,7 +399,18 @@ export function VfoDisplay({
         </button>
       )}
       <div className="freq-bot">
-        <span className="label-xs">{resolvedLabel}</span>
+        <span className="label-xs">
+          {resolvedLabel}
+          {xvtr ? (
+            <span
+              className="xvtr-tag"
+              title={`Transverter band ${xvtr.name}: the radio is tuned to the IF`}
+              data-testid="xvtr-tag"
+            >
+              {` · XVTR ${xvtr.name} · IF ${(transverterIfHz(vfoHz, xvtr) / 1e6).toFixed(3)}`}
+            </span>
+          ) : null}
+        </span>
         <span className="label-xs">
           {locked
             ? 'LOCKED — unlock to tune'
