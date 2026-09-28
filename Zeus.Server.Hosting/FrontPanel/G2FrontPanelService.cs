@@ -122,7 +122,7 @@ public sealed class G2FrontPanelService : BackgroundService
 
     // Last LED state pushed to the panel (index = LED number), -1 = unknown so
     // the first poll always writes. G2-Ultra LEDs: 1=MOX, 2=TUNE, 3=PS,
-    // 6=RIT, 7=XIT, 9=LOCK.
+    // 6=RIT, 7=XIT, 8=A/B (split: TX on VFO B), 9=LOCK.
     private readonly int[] _lastLed = new int[16];
 
     public G2FrontPanelService(
@@ -471,18 +471,28 @@ public sealed class G2FrontPanelService : BackgroundService
     }
 
     // Compute the G2-Ultra LED set from current radio state and emit ZZZI for
-    // any that changed. LEDs Zeus has no state for (ATU=4, active-RX=8) stay
-    // off — see the gap table.
+    // any that changed. ATU (4) stays off: Zeus has no ATU state to show.
     private void RefreshLeds()
     {
-        var s = _radio.Snapshot();
-        SetLed(1, _tx.IsMoxOn);        // MOX
-        SetLed(2, _tx.IsTunOn);        // TUNE
-        SetLed(3, s.PsEnabled);        // PureSignal (readback only)
-        SetLed(6, s.RitEnabled);       // RIT
-        SetLed(7, s.XitEnabled);       // XIT
-        SetLed(9, s.VfoLocked);        // LOCK
+        foreach (var (led, on) in LedStates(_radio.Snapshot(), _tx.IsMoxOn, _tx.IsTunOn))
+            SetLed(led, on);
     }
+
+    /// <summary>The G2-Ultra LED set for a radio state — pure, so it is tested.
+    /// LED 8 sits with the A/B button: the panel's main knob always tunes VFO
+    /// A, so the one lasting A/B state worth a lamp is SPLIT — transmit on VFO
+    /// B (TxReceiverIndex 1, the SPLIT button) or RX1's split projection. It is
+    /// also exactly when pressing A/B moves the transmit frequency.</summary>
+    internal static (int Led, bool On)[] LedStates(StateDto s, bool moxOn, bool tunOn) =>
+    [
+        (1, moxOn),                                         // MOX
+        (2, tunOn),                                         // TUNE
+        (3, s.PsEnabled),                                   // PureSignal (readback only)
+        (6, s.RitEnabled),                                  // RIT
+        (7, s.XitEnabled),                                  // XIT
+        (8, s.TxReceiverIndex >= 1 || s.SplitEnabled),      // A/B — split, TX on VFO B
+        (9, s.VfoLocked),                                   // LOCK
+    ];
 
     private void SetLed(int led, bool on)
     {
