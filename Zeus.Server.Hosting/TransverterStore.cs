@@ -43,7 +43,7 @@ public sealed class TransverterStore : IDisposable
             if (e?.Json is not { Length: > 0 } json) return new TransverterSettingsDto([]);
             try
             {
-                var bands = JsonSerializer.Deserialize<List<TransverterBandDto>>(json) ?? [];
+                var bands = System.Text.Json.JsonSerializer.Deserialize<List<TransverterBandDto>>(json) ?? [];
                 return new TransverterSettingsDto(bands);
             }
             catch (JsonException)
@@ -60,7 +60,7 @@ public sealed class TransverterStore : IDisposable
         if (Transverters.Validate(clean) is string err) return err;
         lock (_sync)
         {
-            var json = JsonSerializer.Serialize(clean);
+            var json = System.Text.Json.JsonSerializer.Serialize(clean);
             var e = _coll.FindOne(x => x.Key == Key);
             if (e is null) _coll.Insert(new TransverterEntry { Key = Key, Json = json });
             else { e.Json = json; _coll.Update(e); }
