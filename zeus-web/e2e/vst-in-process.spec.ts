@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// "Download VST Engine" — a new operator on a fresh PC selects the VST route,
-// finds no engine installed, and clicks one button that downloads, installs,
-// and CONFIGURES the out-of-process engine so VST is immediately working. This
-// drives that flow end-to-end against a stubbed backend: the install endpoints
-// report progress, and the configure step flips the TX route to an active VST
-// engine. Mirrors audio-devices.spec.ts for the Settings → Audio Tools harness.
-
+// VST3 on Windows, after the out-of-process engine's retirement. This spec
+// used to drive "Download VST Engine": a separate executable fetched from
+// upstream's server. That server and the engine's source are gone, and ANAN
+// Core no longer launches closed or third-party executables — VST3 runs in the
+// in-process bridge. The spec now pins what a Windows operator sees instead:
+// Scan plugins on BOTH rails in Native mode (Windows used to get the engine
+// button INSTEAD, and TX only in VST mode — no way to add a VST3 at all; field
+// issue #62), NATIVE status, no Native/VST toggle, no engine download — and
+// that Scan plugins opens the suite with its VST3 folder scan. Stubbed backend,
+// Windows-shaped, with the engine routes retired exactly as the server has
+// them (install/repair POST -> 410, processing-mode -> native).
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 async function fulfillJson(route: Route, body: unknown) {
@@ -42,6 +46,18 @@ type EngineWorld = {
   configurePuts: number;
 };
 
+// The install DTO a Windows server reports: the platform where the retired
+// engine WAS supported — i.e. exactly the shape that used to hide Scan/Add.
+const WINDOWS_INSTALL_DTO = {
+  phase: 'idle',
+  percent: 0,
+  message: '',
+  engineAvailable: false,
+  engineSupported: true,
+  inProcessHostSupported: true,
+  auSupported: false,
+};
+
 async function stubZeusApi(page: Page): Promise<EngineWorld> {
   const world: EngineWorld = {
     engineInstalled: false,
@@ -50,7 +66,9 @@ async function stubZeusApi(page: Page): Promise<EngineWorld> {
     configurePuts: 0,
   };
 
-  await page.addInitScript(() => {
+  // Context-wide: the Audio Suite opens as a separate popup window, which
+  // needs the same stubbed backend as the page that opened it.
+  await page.context().addInitScript(() => {
     const NativeWebSocket = window.WebSocket;
     class MockZeusWebSocket extends EventTarget {
       readonly url: string;
@@ -92,7 +110,7 @@ async function stubZeusApi(page: Page): Promise<EngineWorld> {
     window.WebSocket = MockZeusWebSocket as unknown as typeof WebSocket;
   });
 
-  await page.route(/^https?:\/\/[^/]+\/api(?:\/|\?|$)/, async (route) => {
+  await page.context().route(/^https?:\/\/[^/]+\/api(?:\/|\?|$)/, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
@@ -161,45 +179,26 @@ async function stubZeusApi(page: Page): Promise<EngineWorld> {
       return;
     }
 
-    // VST engine provisioning. POST kicks the "download" off and immediately
-    // marks the engine installed; GET reports it done. (The real server streams
-    // download → extract → stage; the contract the frontend depends on is the
-    // terminal "done" + engineAvailable flip, which is what we assert.)
-    if (url.pathname.endsWith('/vst-engine/install')) {
+    // Engine routes as the server now has them: install/repair POSTs are gone
+    // (410); GET still answers with the platform flags; the mode is native.
+    if (url.pathname.endsWith('/vst-engine/install') || url.pathname.endsWith('/vst-engine/repair')) {
       if (method === 'POST') {
         world.installPosts += 1;
-        world.engineInstalled = true;
-        await fulfillJson(route, {
-          phase: 'downloading',
-          percent: 0,
-          message: 'Downloading…',
-          engineAvailable: false,
+        await route.fulfill({
+          status: 410,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: 'The separate VST engine is not part of ANAN Core.' }),
         });
         return;
       }
-      await fulfillJson(route, {
-        phase: 'done',
-        percent: 100,
-        message: 'VST engine installed.',
-        engineAvailable: world.engineInstalled,
-      });
+      await fulfillJson(route, WINDOWS_INSTALL_DTO);
       return;
     }
-
     if (url.pathname.endsWith('/processing-mode')) {
-      if (method === 'PUT') {
-        // The configure step: enabling VST activates the engine once installed.
-        world.configurePuts += 1;
-        world.engineActive = world.engineInstalled;
-      }
-      await fulfillJson(route, {
-        mode: 'vst',
-        engineAvailable: world.engineInstalled,
-        engineActive: world.engineActive,
-      });
+      if (method === 'PUT') world.configurePuts += 1;
+      await fulfillJson(route, { mode: 'native', engineAvailable: false, engineActive: false });
       return;
     }
-
     if (url.pathname.endsWith('/master-bypass')) {
       await fulfillJson(route, { bypassed: false });
       return;
@@ -223,7 +222,7 @@ async function stubZeusApi(page: Page): Promise<EngineWorld> {
   return world;
 }
 
-test('new operator downloads, installs, and auto-configures the VST engine', async ({ page }) => {
+test('Windows operator adds VST3 in-process: Scan plugins on both rails, no engine', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (err) => pageErrors.push(err.message));
   const world = await stubZeusApi(page);
@@ -232,29 +231,32 @@ test('new operator downloads, installs, and auto-configures the VST engine', asy
   await expect(page.getByRole('region', { name: 'Settings' })).toBeVisible();
   await page.getByRole('tab', { name: 'AUDIO TOOLS' }).click();
 
-  // The TX tools panel is in VST mode (engine absent) → the download affordance
-  // is offered, and "Download Audio Suite" (the native-mode peer) is not.
-  // Scope to the TX Audio rail — the RX Audio rail also offers a "Download VST
-  // Engine" button on Windows when the shared engine is missing (issue #1276).
   const txRail = page.getByRole('region', { name: 'TX Audio' });
-  const getEngine = txRail.getByRole('button', { name: 'Download VST Engine' });
-  await expect(getEngine).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Download Audio Suite' })).toHaveCount(0);
+  const rxRail = page.getByRole('region', { name: 'RX Audio' });
 
-  await getEngine.click();
+  // Scan/Add on BOTH rails, in Native mode, on the Windows-shaped server.
+  await expect(txRail.getByRole('button', { name: 'Scan plugins' })).toBeVisible();
+  await expect(rxRail.getByRole('button', { name: 'Scan plugins' })).toBeVisible();
+  await expect(txRail.getByText('NATIVE')).toBeVisible();
 
-  // Install runs, then the configure step flips the route to an active engine.
-  await expect(txRail.getByRole('button', { name: 'VST Engine Ready' })).toBeVisible();
-  // Scope to the TX rail: the RX Audio rail's install button shares the same
-  // vstEngineInstall store state, so its status panel renders an identical
-  // "VST engine ready …" message — an unscoped page.getByText matches both and
-  // trips Playwright strict mode (issue #1276).
-  await expect(txRail.getByText('VST engine ready — TX audio now routes through VST.')).toBeVisible();
+  // No engine download, no engine status, no Native/VST route toggle.
+  await expect(page.getByRole('button', { name: 'Download VST Engine' })).toHaveCount(0);
+  await expect(page.getByText(/VST engine ready/i)).toHaveCount(0);
+  await expect(txRail.getByRole('button', { name: 'VST', exact: true })).toHaveCount(0);
+  await expect(txRail.getByRole('button', { name: 'Native', exact: true })).toHaveCount(0);
 
-  // The engine was actually installed and configured exactly once.
-  await expect.poll(() => world.installPosts).toBe(1);
-  await expect.poll(() => world.configurePuts).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => world.engineActive).toBe(true);
+  // Scan plugins opens the TX Audio Suite — in a separate window
+  // (openAudioSuiteWindow) — with its VST3 folder scan.
+  const suitePromise = page.context().waitForEvent('page');
+  await txRail.getByRole('button', { name: 'Scan plugins' }).click();
+  const suite = await suitePromise;
+  suite.on('pageerror', (err) => pageErrors.push(`suite: ${err.message}`));
+  await suite.waitForLoadState();
+  await expect(suite.getByRole('button', { name: 'Scan VSTs' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: /Add VST folder/ })).toBeVisible();
 
+  // Nothing tried to install or configure an engine.
+  expect(world.installPosts).toBe(0);
+  expect(world.configurePuts).toBe(0);
   expect(pageErrors).toEqual([]);
 });
