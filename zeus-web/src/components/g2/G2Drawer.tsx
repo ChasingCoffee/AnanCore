@@ -37,7 +37,7 @@ import { CtunButton } from '../CtunButton';
 import { NrKeyButton } from '../NrKeyButton';
 import { RecorderButton } from '../RecorderButton';
 import { DisplayPanel } from '../DisplayPanel';
-import { SplitButton, RitButton } from '../RitSplitButtons';
+import { SplitButton, RitButton, XitButton } from '../RitSplitButtons';
 import { DiversityToggleButton } from '../DiversityWindow';
 import { PreampButton } from '../PreampButton';
 import { CwDecodeToggleButton } from '../CwDecodeWindow';
@@ -346,9 +346,10 @@ export function G2Drawer() {
           layout never remounts the transport's children. */}
       {controlsOpen ? (
         <div className="g2-controls-extras">
-          <span className="g2-extras-label">SPLIT · RIT · DIV · CW · NIGHT</span>
+          <span className="g2-extras-label">SPLIT · RIT · XIT · DIV · CW · NIGHT</span>
           <SplitButton />
           <RitButton />
+          <XitButton />
           <DiversityToggleButton />
           <CwDecodeToggleButton />
           <button
@@ -884,6 +885,9 @@ const KEY_REGISTRY: Record<string, KeyDef> = {
   ctun: { node: <CtunButton /> },
   split: { node: <SplitButton /> },
   rit: { node: <RitButton /> },
+  // Assignable via ✎; not in the default twelve. The RX1 flag shows an XIT
+  // badge whenever XIT is on, so it is visible even when this key is not.
+  xit: { node: <XitButton /> },
   div: { node: <DiversityToggleButton /> },
   mute: { node: <MuteKeyButton /> },
   lock: { node: <VfoLockKeyButton /> },
@@ -894,8 +898,9 @@ const KEY_REGISTRY: Record<string, KeyDef> = {
   pre: { node: <PreampButton />, boardOnly: 'Metis' },
 };
 
-// Twelve always-available keys, twelve slots: every key on the glass, no
-// duplicates, no blanks, on every board. PRE joins the pool on Metis only.
+// Twelve default keys in twelve slots: no duplicates, no blanks, on every
+// board. XIT (and PRE, on Metis only) are in the ✎ pool but not a default —
+// XIT's state is always visible on RX1's flag badge regardless.
 const DEFAULT_DECKS: { deck1: string[]; deck2: string[]; deck3: string[] } = {
   deck1: ['tun', 'mon', 'ps', 'ctun'],
   deck2: ['split', 'rit', 'div', 'mute'],

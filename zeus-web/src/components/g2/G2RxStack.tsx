@@ -35,6 +35,7 @@ import { ZoomControl } from '../ZoomControl';
 import { AnalogMeterPanel } from '../analog-meter/AnalogMeterPanel';
 import { FilterMiniPan } from '../filter/FilterMiniPan';
 import { useConnectionStore } from '../../state/connection-store';
+import { XitTxBadge } from '../RitSplitButtons';
 import { useRxMetersStore } from '../../state/rx-meters-store';
 import { useDisplayStore, selectDisplaySlice } from '../../state/display-store';
 import {
@@ -466,6 +467,9 @@ function RxPane({ receiver, heightPct }: { receiver: ReceiverKey; heightPct: num
             RX{rxIndex + 1}
           </span>
           {active ? <span style={flagActiveTag}>ACTIVE</span> : null}
+          {rxIndex === 0 ? (
+            <XitTxBadge style={{ ...flagActiveTag, color: 'var(--tx, #e05656)' }} />
+          ) : null}
           {rxIndex === 0 && splitEnabled ? (
             <span style={{ ...flagActiveTag, color: 'var(--tx, #e05656)' }}>SPLIT▸B</span>
           ) : null}

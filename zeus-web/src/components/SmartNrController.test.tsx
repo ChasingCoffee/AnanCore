@@ -149,6 +149,8 @@ function mockState(nr: NrConfigDto): RadioStateDto {
     ctunEnabled: false,
     ritEnabled: false,
     ritHz: 0,
+    xitEnabled: false,
+    xitHz: 0,
     splitEnabled: false,
   };
 }

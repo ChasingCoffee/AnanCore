@@ -5708,3 +5708,6 @@
   cursor: pointer; font-size: 12px; padding: 0 3px; }
 .rit-chip button:hover { color: #d7dde6; }
 .rit-chip .rit-val { color: #ffb13c; min-width: 42px; text-align: center; }
+/* XIT moves the TRANSMITTED carrier, so it reads in TX red, not RIT amber. */
+.xit-toggle.engaged { color: #ff6b6b; border-color: #8f2c2c; }
+.xit-chip .rit-val { color: #ff6b6b; }

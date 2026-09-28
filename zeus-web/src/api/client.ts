@@ -494,6 +494,12 @@ export type RadioStateDto = {
   ctunEnabled: boolean;
   ritEnabled: boolean;
   ritHz: number;
+  // XIT (Thetis chkXIT/udXIT): TX carrier offset, the dial untouched. Can be
+  // set from the G2 front panel, CAT, TCI or MIDI as well as the UI, which is
+  // why the client must always carry it — an XIT nobody can see is an
+  // off-frequency transmission.
+  xitEnabled: boolean;
+  xitHz: number;
   splitEnabled: boolean;
   // ---- Multi-DDC receivers array (wire v2) ----
   // Canonical per-receiver list: index 0 = RX1, 1 = RX2, >= 2 = extra DDCs.
@@ -2677,6 +2683,8 @@ export function normalizeState(raw: unknown): RadioStateDto {
     ctunEnabled: typeof r.ctunEnabled === 'boolean' ? r.ctunEnabled : false,
     ritEnabled: typeof r.ritEnabled === 'boolean' ? r.ritEnabled : false,
     ritHz: typeof r.ritHz === 'number' ? r.ritHz : 0,
+    xitEnabled: typeof r.xitEnabled === 'boolean' ? r.xitEnabled : false,
+    xitHz: typeof r.xitHz === 'number' ? r.xitHz : 0,
     splitEnabled: typeof r.splitEnabled === 'boolean' ? r.splitEnabled : false,
     // ---- Multi-DDC receivers array (wire v2) ----
     // A v1 server omits these. Leave them undefined (not []/0) so applyState's

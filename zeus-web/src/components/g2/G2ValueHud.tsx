@@ -36,6 +36,7 @@ function snapshot(rxIndex: number, sharedControls: boolean): Watched[] {
     { label: 'ATT', value: s.attenDb, fmt: (v) => `${Math.round(v)} dB` },
     { label: 'SQL', value: s.squelch?.level, fmt: num },
     { label: 'RIT', value: s.ritHz, fmt: hz },
+    { label: 'XIT', value: s.xitHz, fmt: hz },
     { label: 'DRIVE', value: t.drivePercent, fmt: pct },
     { label: 'MIC', value: t.micGainDb, fmt: db },
   ];

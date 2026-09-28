@@ -15,6 +15,8 @@ const PRIOR_SNAPSHOT = {
   ctunEnabled: false,
   ritEnabled: false,
   ritHz: 0,
+  xitEnabled: false,
+  xitHz: 0,
   splitEnabled: false,
   radioLoHz: 14_200_000,
   zoomLevel: 1,

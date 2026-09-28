@@ -156,6 +156,8 @@ export type ConnectionState = {
   // via the transport RIT control -> POST /api/rx/rit.
   ritEnabled: boolean;
   ritHz: number;
+  xitEnabled: boolean;
+  xitHz: number;
   // SPLIT (Thetis semantics): TX carrier follows VFO B instead of A.
   // Toggled via the transport SPLIT button -> POST /api/tx/vfo.
   splitEnabled: boolean;
@@ -308,6 +310,8 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
   ctunEnabled: false,
   ritEnabled: false,
   ritHz: 0,
+  xitEnabled: false,
+  xitHz: 0,
   splitEnabled: false,
   radioLoHz: 14_200_000,
   cwPitchHz: 600,
@@ -414,6 +418,8 @@ export const useConnectionStore = create<ConnectionState>((set) => ({
             : prev.ctunEnabled,
         ritEnabled: s.ritEnabled,
         ritHz: s.ritHz,
+        xitEnabled: s.xitEnabled,
+        xitHz: s.xitHz,
         splitEnabled: s.splitEnabled,
         radioLoHz: s.radioLoHz,
         cwPitchHz: s.cwPitchHz,

@@ -27,7 +27,7 @@ The full-height row below is the **key row**: **MOX** fixed on the left, four op
 | 2 | **SPLIT · RIT · DIV · MUTE** (mute follows the focused receiver) |
 | 3 | **LOCK** (VFO lock) · **2TON** (two-tone generator — keys the transmitter, lights TX red) · **CW⌁** (CW decoder) · **FULL SCR** |
 
-**PRE** joins the pool only on the one board where the preamp bit does anything. All keys carry the same safeguards as their desktop originals, at finger size. Key-set assignments are stored on the radio. A compact FWD / SWR / ALC readout (label, bar, value) sits inline in the transport row.
+**XIT** is in the ✎ pool but not a default key — RX1's flag shows a red **XIT ±n** tag whenever XIT is on, so it is visible even when the key isn't placed. **PRE** joins the pool only on the one board where the preamp bit does anything. All keys carry the same safeguards as their desktop originals, at finger size. Key-set assignments are stored on the radio. A compact FWD / SWR / ALC readout (label, bar, value) sits inline in the transport row.
 
 ### The left rail
 

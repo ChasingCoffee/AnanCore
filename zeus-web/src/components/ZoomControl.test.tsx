@@ -83,6 +83,8 @@ describe('ZoomControl', () => {
       ctunEnabled: true,
       ritEnabled: false,
       ritHz: 0,
+      xitEnabled: false,
+      xitHz: 0,
       splitEnabled: false,
       vfoHz: 14_205_000,
       radioLoHz: 14_200_000,

@@ -94,7 +94,7 @@ import { QrmButton, QrmPanelToggleButton } from './components/QrmButton';
 import { DiversityWindow, DiversityToggleButton } from './components/DiversityWindow';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { SstvWindow } from './components/SstvWindow';
-import { SplitButton, RitButton } from './components/RitSplitButtons';
+import { SplitButton, RitButton, XitButton } from './components/RitSplitButtons';
 import { CwDecodeController } from './components/CwDecodeController';
 import { CwDecodeWindow, CwDecodeToggleButton } from './components/CwDecodeWindow';
 import { RogerBeepButton } from './components/RogerBeepButton';
@@ -1697,6 +1697,7 @@ export default function App() {
               returns when a memory feature actually exists. */}
           <SplitButton />
           <RitButton />
+          <XitButton />
           <CwDecodeToggleButton />
           <RecorderButton />
         </div>
