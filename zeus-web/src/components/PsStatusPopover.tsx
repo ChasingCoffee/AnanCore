@@ -15,6 +15,7 @@
 // statement and per-component attribution.
 
 import { useTxStore } from '../state/tx-store';
+import { formatImdDbc, IMD_BOUND_TITLE } from '../util/imd-format';
 
 const CAL_STATE_NAMES = [
   'RESET',
@@ -47,6 +48,8 @@ export function PsStatusPopover() {
   const psCorrecting = useTxStore((s) => s.psCorrecting);
   const psImd3Dbc = useTxStore((s) => s.psImd3Dbc);
   const psImd5Dbc = useTxStore((s) => s.psImd5Dbc);
+  const psImd3IsBound = useTxStore((s) => s.psImd3IsBound);
+  const psImd5IsBound = useTxStore((s) => s.psImd5IsBound);
   const psCalFits = useTxStore((s) => s.psCalFits);
   const psCalAttempts = useTxStore((s) => s.psCalAttempts);
   const psMaxTxEnvelope = useTxStore((s) => s.psMaxTxEnvelope);
@@ -147,13 +150,17 @@ export function PsStatusPopover() {
           <div className="ps-popover-row" title="Two-tone 3rd-order products relative to the tones, measured live on the TX spectrum (post-PA when PS is armed). Key two-tone to measure.">
             <dt>IMD3</dt>
             <dd className="mono">
-              {Number.isFinite(psImd3Dbc) ? `${psImd3Dbc.toFixed(1)} dBc` : '—'}
+              <span title={psImd3IsBound ? IMD_BOUND_TITLE : undefined}>
+                {formatImdDbc(psImd3Dbc, psImd3IsBound)}
+              </span>
             </dd>
           </div>
           <div className="ps-popover-row" title="Two-tone 5th-order products relative to the tones.">
             <dt>IMD5</dt>
             <dd className="mono">
-              {Number.isFinite(psImd5Dbc) ? `${psImd5Dbc.toFixed(1)} dBc` : '—'}
+              <span title={psImd5IsBound ? IMD_BOUND_TITLE : undefined}>
+                {formatImdDbc(psImd5Dbc, psImd5IsBound)}
+              </span>
             </dd>
           </div>
           <div className="ps-popover-row" title="PS3 calibration fits: accepted (scheck passed) / attempted. A widening gap with accepted frozen means calcc keeps rejecting the chain — see the over-drive banner in Settings → PURESIGNAL.">

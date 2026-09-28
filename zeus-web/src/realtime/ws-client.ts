@@ -727,6 +727,9 @@ export function dispatchServerFrame(data: ArrayBuffer): void {
       // 31-byte frames append the PS3 fit counters (accepted / attempted);
       // an older server leaves both 0 and the UI shows nothing new.
       const hasCounters = ev.data.byteLength >= PS_METERS_BYTES + 16;
+      // 32-byte frames append IMD flags: bit 0 IMD3 / bit 1 IMD5 is an upper
+      // bound (below the display's measurable limit). Older server → 0.
+      const imdFlags = ev.data.byteLength >= PS_METERS_BYTES + 17 ? dv.getUint8(31) : 0;
       useTxStore.getState().setPsMeters({
         feedbackLevel: dv.getFloat32(1, true),
         correctionDb: dv.getFloat32(5, true),
@@ -735,6 +738,8 @@ export function dispatchServerFrame(data: ArrayBuffer): void {
         maxTxEnvelope: dv.getFloat32(11, true),
         imd3Dbc: hasImd ? dv.getFloat32(15, true) : NaN,
         imd5Dbc: hasImd ? dv.getFloat32(19, true) : NaN,
+        imd3IsBound: (imdFlags & 0x01) !== 0,
+        imd5IsBound: (imdFlags & 0x02) !== 0,
         calFits: hasCounters ? dv.getInt32(23, true) : 0,
         calAttempts: hasCounters ? dv.getInt32(27, true) : 0,
       });

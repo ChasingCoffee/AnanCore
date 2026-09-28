@@ -613,6 +613,7 @@ public sealed class TxMetersService : BackgroundService
                 {
                     var psm = ps.GetPsStageMeters();
                     var (imd3, imd5) = _pipe.LastTwoToneImd;
+                    var (imd3Bound, imd5Bound) = _pipe.LastTwoToneImdBounds;
                     var psFrame = new PsMetersFrame(
                         FeedbackLevel: psm.FeedbackLevel,
                         CorrectionDb: psm.CorrectionDb,
@@ -622,7 +623,9 @@ public sealed class TxMetersService : BackgroundService
                         Imd3Dbc: (float)imd3,
                         Imd5Dbc: (float)imd5,
                         CalFits: psm.CalibrationAttempts,
-                        CalAttempts: psm.AttemptedFits);
+                        CalAttempts: psm.AttemptedFits,
+                        ImdFlags: (byte)((imd3Bound ? PsMetersFrame.ImdFlagImd3IsBound : 0)
+                                       | (imd5Bound ? PsMetersFrame.ImdFlagImd5IsBound : 0)));
                     _hub.Broadcast(psFrame);
                     // Mirror the live read-out into the StateDto so REST/state
                     // pollers see it too — same pattern PA/Mic meters use.

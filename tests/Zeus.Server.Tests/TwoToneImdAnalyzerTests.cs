@@ -108,4 +108,72 @@ public class TwoToneImdAnalyzerTests
         Assert.False(TwoToneImdAnalyzer.TryMeasure(bins, 1000f, 14_200_000, 14_200_000, 700, 1900, false,
             out _, out _));
     }
+
+    // ---- Noise-aware limit (field: PS IMD3/IMD5 read higher than actual) ----
+    // A REALISTIC display floor is not flat: each pixel is the peak of several
+    // FFT bins of noise, so window maxima sit well above the median. The old
+    // median+3 dB gate reported those noise peaks as products once PureSignal
+    // had pushed the real ones into the floor. These spectra model that.
+    private static float[] NoisySpectrum(double imd3, int seed, double floorPerBin = -70,
+        float hzPerPixel = 93.75f, double f1 = 700, double f2 = 1900)
+    {
+        const int n = 1024, fftPerPx = 4;
+        var rng = new Random(seed);
+        double noiseLin = Math.Pow(10, floorPerBin / 10);
+        var bins = new float[n];
+        for (int px = 0; px < n; px++)
+        {
+            double pk = 0;
+            for (int k = 0; k < fftPerPx; k++)
+            {
+                double pw = -Math.Log(1 - rng.NextDouble()) * noiseLin;   // exponential noise power
+                if (pw > pk) pk = pw;
+            }
+            bins[px] = (float)(10 * Math.Log10(pk));
+        }
+        void Put(double offHz, double db)
+        {
+            int px = (int)Math.Round(n / 2.0 + offHz / hzPerPixel);
+            double lin = Math.Pow(10, bins[px] / 10) + Math.Pow(10, db / 10);
+            bins[px] = (float)(10 * Math.Log10(lin));
+        }
+        Put(f1, 0); Put(f2, 0);
+        Put(2 * f1 - f2, imd3); Put(2 * f2 - f1, imd3);
+        return bins;
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void ProductBelowTheFloor_IsAnUpperBound_NeverANoisePeakReading(int seed)
+    {
+        // True IMD3 at -100 dBc, 30 dB under a -70 dB display floor. The old
+        // gate reported ~-63 dBc here most of the time: a noise peak.
+        var bins = NoisySpectrum(imd3: -100, seed);
+        Assert.True(TwoToneImdAnalyzer.TryMeasureWithLimit(bins, 93.75f, 14_200_000, 14_200_000,
+            700, 1900, false, out var m));
+        Assert.True(m.Imd3IsBound);
+        // The bound is conservative: the true value is at least this good.
+        Assert.True(m.Imd3Dbc > -100);
+        // ...and the measured-only API refuses rather than inventing a number.
+        Assert.False(TwoToneImdAnalyzer.TryMeasure(bins, 93.75f, 14_200_000, 14_200_000,
+            700, 1900, false, out double imd3, out _));
+        Assert.True(double.IsNaN(imd3));
+    }
+
+    [Theory]
+    [InlineData(-40, 1)]
+    [InlineData(-45, 2)]
+    [InlineData(-50, 3)]
+    public void ProductWellAboveTheFloor_IsMeasuredAccurately_OnANoisyFloor(double trueImd3, int seed)
+    {
+        var bins = NoisySpectrum(imd3: trueImd3, seed);
+        Assert.True(TwoToneImdAnalyzer.TryMeasureWithLimit(bins, 93.75f, 14_200_000, 14_200_000,
+            700, 1900, false, out var m));
+        Assert.False(m.Imd3IsBound);
+        Assert.InRange(m.Imd3Dbc, trueImd3 - 1.0, trueImd3 + 1.0);
+    }
 }

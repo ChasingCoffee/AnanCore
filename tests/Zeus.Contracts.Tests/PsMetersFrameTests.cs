@@ -46,7 +46,7 @@ public class PsMetersFrameTests
         frame.Serialize(writer);
 
         Assert.Equal(PsMetersFrame.ByteLength, writer.WrittenCount);
-        Assert.Equal(31, writer.WrittenCount);
+        Assert.Equal(32, writer.WrittenCount);   // 31 + ImdFlags
 
         var decoded = PsMetersFrame.Deserialize(writer.WrittenSpan);
         Assert.Equal(frame.FeedbackLevel, decoded.FeedbackLevel);
@@ -129,5 +129,25 @@ public class PsMetersFrameTests
         Assert.Equal(-33f, decoded.Imd3Dbc);
         Assert.Equal(0, decoded.CalFits);
         Assert.Equal(0, decoded.CalAttempts);
+    }
+
+    [Fact]
+    public void ImdFlags_RoundTrip_AndOlderFramesReadAsPlainValues()
+    {
+        var frame = new PsMetersFrame(1f, 2f, 3, true, 0.5f, Imd3Dbc: -59f, Imd5Dbc: -61f,
+            CalFits: 4, CalAttempts: 5,
+            ImdFlags: (byte)(PsMetersFrame.ImdFlagImd3IsBound | PsMetersFrame.ImdFlagImd5IsBound));
+        var writer = new System.Buffers.ArrayBufferWriter<byte>();
+        frame.Serialize(writer);
+        var full = PsMetersFrame.Deserialize(writer.WrittenSpan);
+        Assert.Equal(frame.ImdFlags, full.ImdFlags);
+        Assert.Equal(4, full.CalFits);
+        Assert.Equal(5, full.CalAttempts);
+
+        // A 31-byte (pre-flags) frame: counters intact, no bound flags.
+        var older = PsMetersFrame.Deserialize(writer.WrittenSpan[..PsMetersFrame.PreFlagsByteLength]);
+        Assert.Equal(4, older.CalFits);
+        Assert.Equal(5, older.CalAttempts);
+        Assert.Equal((byte)0, older.ImdFlags);
     }
 }

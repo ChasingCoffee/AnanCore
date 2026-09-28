@@ -4034,6 +4034,35 @@ public class DspPipelineService : BackgroundService,
     private long _imdDiagMs;
     private readonly MedianWindow _imd3Median = new(5);
     private readonly MedianWindow _imd5Median = new(5);
+    private readonly BoundVote _imd3BoundVote = new(5);
+    private readonly BoundVote _imd5BoundVote = new(5);
+    private bool _imd3IsBound;
+    private bool _imd5IsBound;
+
+    // Majority vote over the last N readings' upper-bound flags (display-tick
+    // thread only), paired with the MedianWindow of the same length.
+    private sealed class BoundVote
+    {
+        private readonly bool[] _ring;
+        private int _fill, _idx;
+        public BoundVote(int n) { _ring = new bool[n]; }
+        public void Clear() { _fill = 0; _idx = 0; }
+        public void Push(bool v)
+        {
+            _ring[_idx] = v;
+            _idx = (_idx + 1) % _ring.Length;
+            if (_fill < _ring.Length) _fill++;
+        }
+        public bool Majority
+        {
+            get
+            {
+                int t = 0;
+                for (int i = 0; i < _fill; i++) if (_ring[i]) t++;
+                return _fill > 0 && t * 2 > _fill;
+            }
+        }
+    }
 
     // Tiny fixed-size median for the IMD readout (display-tick thread only).
     private sealed class MedianWindow
@@ -4055,6 +4084,11 @@ public class DspPipelineService : BackgroundService,
     }
     public (double Imd3Dbc, double Imd5Dbc) LastTwoToneImd
         => (Volatile.Read(ref _lastImd3Dbc), Volatile.Read(ref _lastImd5Dbc));
+
+    /// <summary>True when the published value is an upper bound ("< X dBc"):
+    /// the product is below what the feedback display can measure.</summary>
+    public (bool Imd3IsBound, bool Imd5IsBound) LastTwoToneImdBounds
+        => (Volatile.Read(ref _imd3IsBound), Volatile.Read(ref _imd5IsBound));
 
     /// <summary>
     /// Manually set the PS TX feedback attenuation (operator alternative to
@@ -7169,10 +7203,11 @@ public class DspPipelineService : BackgroundService,
             {
                 var txMode = state.TxReceiverIndex == 1 ? state.Rx2().Mode : state.Mode;
                 bool lsb = txMode is RxMode.LSB or RxMode.CWL or RxMode.DIGL;
-                bool ok = TwoToneImdAnalyzer.TryMeasure(
+                bool ok = TwoToneImdAnalyzer.TryMeasureWithLimit(
                     panBuf, hzPerPixel, centerHz, RadioService.TxFrequencyHz(state),
                     state.TwoToneFreq1, state.TwoToneFreq2, lsb,
-                    out double imd3, out double imd5);
+                    out var imdM);
+                double imd3 = imdM.Imd3Dbc, imd5 = imdM.Imd5Dbc;
                 // 1 Hz diagnostic while two-tone runs: the raw per-frame value
                 // next to the published median, plus the source, so field
                 // instability reports carry the numbers that place the fault.
@@ -7189,13 +7224,25 @@ public class DspPipelineService : BackgroundService,
                 // jitter. NaN frames are skipped, not averaged in.
                 Volatile.Write(ref _lastImd3Dbc, ok ? _imd3Median.Push(imd3) : double.NaN);
                 Volatile.Write(ref _lastImd5Dbc, ok && double.IsFinite(imd5) ? _imd5Median.Push(imd5) : double.NaN);
+                // Upper-bound flag rides with the published median: a product
+                // below the measurable limit is shown as "< X dBc", never as a
+                // noise peak dressed as a measurement. Majority of the same
+                // window, so the flag doesn't flicker at the threshold.
+                if (ok) _imd3BoundVote.Push(imdM.Imd3IsBound);
+                if (ok && double.IsFinite(imd5)) _imd5BoundVote.Push(imdM.Imd5IsBound);
+                Volatile.Write(ref _imd3IsBound, ok && _imd3BoundVote.Majority);
+                Volatile.Write(ref _imd5IsBound, ok && double.IsFinite(imd5) && _imd5BoundVote.Majority);
             }
             else if (!state.TwoToneEnabled)
             {
                 _imd3Median.Clear();
                 _imd5Median.Clear();
+                _imd3BoundVote.Clear();
+                _imd5BoundVote.Clear();
                 Volatile.Write(ref _lastImd3Dbc, double.NaN);
                 Volatile.Write(ref _lastImd5Dbc, double.NaN);
+                Volatile.Write(ref _imd3IsBound, false);
+                Volatile.Write(ref _imd5IsBound, false);
             }
             if (wf)
             {

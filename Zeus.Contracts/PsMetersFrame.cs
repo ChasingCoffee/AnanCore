@@ -64,15 +64,25 @@ public readonly record struct PsMetersFrame(
     float Imd3Dbc = float.NaN,
     float Imd5Dbc = float.NaN,
     int CalFits = 0,
-    int CalAttempts = 0)
+    int CalAttempts = 0,
+    byte ImdFlags = 0)
 {
+    // ImdFlags (appended, byte 31): bit 0 — Imd3Dbc is an UPPER BOUND (the
+    // product is below what the feedback display can measure; show "< X");
+    // bit 1 — same for Imd5Dbc. Readers of the older 31-byte frame see 0,
+    // i.e. plain values, exactly as before.
+    public const byte ImdFlagImd3IsBound = 0x01;
+    public const byte ImdFlagImd5IsBound = 0x02;
+
     // CalFits — GetPSInfo info[5]: ACCEPTED calibration fits (scheck passed;
     //           the count Thetis gates auto-attenuate on).
     // CalAttempts — info[7] (new in PS3): fits STARTED. attempts − fits =
     //           rejections; a widening gap with fits frozen means calcc keeps
     //           refusing this chain. Appended fields — readers of the older
     //           23-byte frame see zeros.
-    public const int ByteLength = 1 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 4 + 4;
+    public const int ByteLength = 1 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 1;
+    /// <summary>Layout with fit counters but no IMD flags; still accepted on read.</summary>
+    public const int PreFlagsByteLength = 1 + 4 + 4 + 1 + 1 + 4 + 4 + 4 + 4 + 4;
     /// <summary>Pre-IMD layout; still accepted on read.</summary>
     public const int LegacyByteLength = 1 + 4 + 4 + 1 + 1 + 4;
     /// <summary>IMD layout without the fit counters; still accepted on read.</summary>
@@ -91,6 +101,7 @@ public readonly record struct PsMetersFrame(
         BinaryPrimitives.WriteSingleLittleEndian(span.Slice(19, 4), Imd5Dbc);
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(23, 4), CalFits);
         BinaryPrimitives.WriteInt32LittleEndian(span.Slice(27, 4), CalAttempts);
+        span[31] = ImdFlags;
         writer.Advance(ByteLength);
     }
 
@@ -108,7 +119,8 @@ public readonly record struct PsMetersFrame(
             MaxTxEnvelope: BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(11, 4)),
             Imd3Dbc: bytes.Length >= PreCountersByteLength ? BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(15, 4)) : float.NaN,
             Imd5Dbc: bytes.Length >= PreCountersByteLength ? BinaryPrimitives.ReadSingleLittleEndian(bytes.Slice(19, 4)) : float.NaN,
-            CalFits: bytes.Length >= ByteLength ? BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(23, 4)) : 0,
-            CalAttempts: bytes.Length >= ByteLength ? BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(27, 4)) : 0);
+            CalFits: bytes.Length >= PreFlagsByteLength ? BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(23, 4)) : 0,
+            CalAttempts: bytes.Length >= PreFlagsByteLength ? BinaryPrimitives.ReadInt32LittleEndian(bytes.Slice(27, 4)) : 0,
+            ImdFlags: bytes.Length >= ByteLength ? bytes[31] : (byte)0);
     }
 }

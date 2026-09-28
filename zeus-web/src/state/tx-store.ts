@@ -313,6 +313,10 @@ export type TxState = {
   // two-tone generator is off or the measurement isn't trustworthy.
   psImd3Dbc: number;
   psImd5Dbc: number;
+  // True when the value is an UPPER BOUND: the product is below the feedback
+  // display's measurable limit (typical once PS has converged).
+  psImd3IsBound: boolean;
+  psImd5IsBound: boolean;
   // PS3 fit counters from the 0x18 frame: accepted (info[5]) / attempted
   // (info[7]). attempts − fits = rejections.
   psCalFits: number;
@@ -337,6 +341,8 @@ export type TxState = {
     maxTxEnvelope: number;
     imd3Dbc?: number;
     imd5Dbc?: number;
+    imd3IsBound?: boolean;
+    imd5IsBound?: boolean;
     calFits?: number;
     calAttempts?: number;
   }) => void;
@@ -503,6 +509,8 @@ export const useTxStore = create<TxState>()(
       psMaxTxEnvelope: 0,
       psImd3Dbc: NaN,
       psImd5Dbc: NaN,
+      psImd3IsBound: false,
+      psImd5IsBound: false,
       psCalFits: 0,
       psCalAttempts: 0,
       psOverDriveDetected: false,
@@ -517,6 +525,8 @@ export const useTxStore = create<TxState>()(
         psMaxTxEnvelope: nonNegativeFinite(m.maxTxEnvelope),
         psImd3Dbc: Number.isFinite(m.imd3Dbc) ? (m.imd3Dbc as number) : NaN,
         psImd5Dbc: Number.isFinite(m.imd5Dbc) ? (m.imd5Dbc as number) : NaN,
+        psImd3IsBound: m.imd3IsBound === true,
+        psImd5IsBound: m.imd5IsBound === true,
         psCalFits: Number.isFinite(m.calFits ?? NaN) ? Math.max(0, (m.calFits as number) | 0) : 0,
         psCalAttempts: Number.isFinite(m.calAttempts ?? NaN) ? Math.max(0, (m.calAttempts as number) | 0) : 0,
       }),

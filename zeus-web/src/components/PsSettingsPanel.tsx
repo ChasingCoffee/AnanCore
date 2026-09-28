@@ -21,6 +21,7 @@
 // Both are GPL-2.0-or-later.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { formatImdDbc, formatImdValue, IMD_BOUND_TITLE } from '../util/imd-format';
 import {
   setPs,
   setPsAdvanced,
@@ -93,6 +94,8 @@ export function PsSettingsPanel() {
   const psCalState = useTxStore((s) => s.psCalState);
   const psCorrecting = useTxStore((s) => s.psCorrecting);
   const psImd3Dbc = useTxStore((s) => s.psImd3Dbc);
+  const psImd3IsBound = useTxStore((s) => s.psImd3IsBound);
+  const psImd5IsBound = useTxStore((s) => s.psImd5IsBound);
   const psImd5Dbc = useTxStore((s) => s.psImd5Dbc);
   const psMaxTxEnvelope = useTxStore((s) => s.psMaxTxEnvelope);
   const psCalibrationStalled = useTxStore((s) => s.psCalibrationStalled);
@@ -454,14 +457,18 @@ export function PsSettingsPanel() {
               <div className="ps-peak-row">
                 <span className="ps-peak-nm">IMD3</span>
                 <span className="ps-peak-val">
-                  {Number.isFinite(psImd3Dbc) ? psImd3Dbc.toFixed(1) : '—'}
+                  <span title={psImd3IsBound ? IMD_BOUND_TITLE : undefined}>
+                    {formatImdValue(psImd3Dbc, psImd3IsBound)}
+                  </span>
                   {Number.isFinite(psImd3Dbc) ? <small>dBc</small> : null}
                 </span>
               </div>
               <div className="ps-peak-row">
                 <span className="ps-peak-nm">IMD5</span>
                 <span className="ps-peak-val">
-                  {Number.isFinite(psImd5Dbc) ? psImd5Dbc.toFixed(1) : '—'}
+                  <span title={psImd5IsBound ? IMD_BOUND_TITLE : undefined}>
+                    {formatImdValue(psImd5Dbc, psImd5IsBound)}
+                  </span>
                   {Number.isFinite(psImd5Dbc) ? <small>dBc</small> : null}
                 </span>
               </div>
@@ -784,7 +791,7 @@ export function PsSettingsPanel() {
           {isCorrecting ? (
             <span className="saved">
               {Number.isFinite(psImd3Dbc)
-                ? `converged · IMD3 ${psImd3Dbc.toFixed(1)} dBc`
+                ? `converged · IMD3 ${formatImdDbc(psImd3Dbc, psImd3IsBound)}`
                 : 'converged · correcting'}
             </span>
           ) : isReady ? (
