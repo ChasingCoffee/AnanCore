@@ -38,8 +38,10 @@ public sealed class TransvertersTests : IDisposable
     {
         Transverters.Apply([Cm13()]);
         Assert.Equal(28_100_000, Transverters.HardwareHz(2_300_100_000));
+        // IF = RF - (LO + LO error), piHPSDR's vfo.lo = frequencyLO + errorLO:
+        // a +1.5 kHz LO error lowers the IF by 1.5 kHz.
         Transverters.Apply([Cm13(loError: 1_500)]);
-        Assert.Equal(28_101_500, Transverters.HardwareHz(2_300_100_000));
+        Assert.Equal(28_098_500, Transverters.HardwareHz(2_300_100_000));
     }
 
     [Fact]
