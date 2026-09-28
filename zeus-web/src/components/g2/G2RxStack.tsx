@@ -242,6 +242,8 @@ function RxPane({ receiver, heightPct }: { receiver: ReceiverKey; heightPct: num
   // configs ever land server-side, these chips are already per-flag.
   // This pane's own NR (falls back to RX1's until set independently).
   const nrCfg = useConnectionStore((s) => getReceiverNr(s, receiver));
+  // CTUN is radio-wide: the panadapter holds still and the dial moves across it.
+  const ctunEnabled = useConnectionStore((s) => s.ctunEnabled);
   const stepHz = useToolbarFavoritesStore((s) => s.stepHz);
   const setStepHz = useToolbarFavoritesStore((s) => s.setStepHz);
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -511,6 +513,16 @@ function RxPane({ receiver, heightPct }: { receiver: ReceiverKey; heightPct: num
           </span>
           <span style={{ ...dspChip, ...(nrCfg.anfEnabled ? dspChipOn : null) }}>ANF</span>
           <span style={{ ...dspChip, ...(nrCfg.snbEnabled ? dspChipOn : null) }}>SNB</span>
+          <span
+            style={{ ...dspChip, ...(ctunEnabled ? dspChipOn : null) }}
+            title={ctunEnabled
+              ? 'CTUN on: the panadapter holds still and the tuning point moves across it'
+              : 'CTUN off: the panadapter re-centres on the dial'}
+            data-testid="ctun-chip"
+            aria-pressed={ctunEnabled}
+          >
+            CTUN
+          </span>
         </div>
         <div style={sBarRow}>
           <div style={sBarShell}>

@@ -159,6 +159,7 @@ export function VfoDisplay({
   const vfoHz = useConnectionStore((s) => getReceiverVfoHz(s, targetIndex));
   const xvtrBands = useTransverterStore((s) => s.bands);
   const xvtr = transverterFor(vfoHz, xvtrBands);
+  const ctunEnabled = useConnectionStore((s) => s.ctunEnabled);
   const applyState = useConnectionStore((s) => s.applyState);
   const locked = useVfoLockStore((s) => s.locked);
   const postVfo = useCallback(
@@ -401,6 +402,15 @@ export function VfoDisplay({
       <div className="freq-bot">
         <span className="label-xs">
           {resolvedLabel}
+          {ctunEnabled ? (
+            <span
+              className="ctun-tag"
+              title="CTUN on: the panadapter holds still and the tuning point moves across it"
+              data-testid="vfo-ctun-tag"
+            >
+              {' · CTUN'}
+            </span>
+          ) : null}
           {xvtr ? (
             <span
               className="xvtr-tag"
