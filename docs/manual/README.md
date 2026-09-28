@@ -23,8 +23,10 @@ cd docs/manual
 ```
 
 Requires Node + npm and Google Chrome (or any Chromium-family browser) for the
-print engine. The edition/cover lines can be overridden with the
-`MANUAL_EDITION` and `MANUAL_COVERS` environment variables.
+print engine. The edition and cover lines are taken from the nearest release
+tag (`git describe --tags --match "v[0-9]*"`), so build the manual **after**
+tagging. They can still be overridden with the `MANUAL_EDITION` and
+`MANUAL_COVERS` environment variables.
 
 ## ⚙️ Update rule — keep the manual current with every release
 
@@ -37,8 +39,9 @@ Zeus version is released, the manual MUST be updated in the same release work:
    release and against the live UI (settings tabs, the panel catalog, the `/api`
    surface) so nothing is missed. Move anything that was documented as
    "experimental/opt-in" into its normal chapter once it ships as default.
-2. **Bump the edition** on the cover (`MANUAL_EDITION` / `MANUAL_COVERS`, or edit
-   `assemble.mjs`) to name the release.
+2. **Tag first.** The cover names the release from the git tag automatically —
+   there is no edition to bump by hand. (It used to be a hard-coded string that
+   stayed at 1.43 for months.)
 3. **Regenerate the PDF** with `./build.sh` and attach it to the release (and
    refresh the copy on the maintainer's Desktop).
 

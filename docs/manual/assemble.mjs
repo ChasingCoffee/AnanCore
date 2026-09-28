@@ -4,6 +4,7 @@
 // build.sh then prints that to PDF via headless Chrome. See README.md.
 import { marked } from 'marked';
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,8 +12,41 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, 'chapters');
 const BUILD = join(HERE, 'build');
 const OUT = join(BUILD, 'Zeus-Operator-Manual.html');
-const EDITION = process.env.MANUAL_EDITION || 'v1.43 — September 2026';
-const COVERS = process.env.MANUAL_COVERS || 'Covers the ANAN Core 1.43 release · ANAN G2 / G2 Ultra / G2-1K / G2E and desktop';
+// The edition comes from the release tag, so it cannot go stale. It was a
+// hard-coded 'v1.43' that the README asked a human to bump each release —
+// nobody did, and v1.120 shipped a manual claiming to cover 1.43. Order:
+// MANUAL_EDITION / MANUAL_COVERS if set; else the nearest release tag
+// (git describe — release CI checks out with fetch-depth 0, so tags are
+// present, and a local build after tagging sees the new tag); else say it
+// is a development build rather than name a release it may not match.
+function releaseTag() {
+  try {
+    return execSync('git describe --tags --abbrev=0 --match "v[0-9]*"', {
+      cwd: HERE, stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim() || null;
+  } catch {
+    return null;
+  }
+}
+function tagMonth(tag) {
+  try {
+    const iso = execSync(`git log -1 --format=%cI ${tag}`, {
+      cwd: HERE, stdio: ['ignore', 'pipe', 'ignore'],
+    }).toString().trim();
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  } catch {
+    return null;
+  }
+}
+const TAG = releaseTag();
+const TAG_VERSION = TAG ? TAG.replace(/^v/, '') : null;
+const TAG_MONTH = TAG ? tagMonth(TAG) : null;
+const EDITION = process.env.MANUAL_EDITION
+  || (TAG ? `${TAG}${TAG_MONTH ? ` — ${TAG_MONTH}` : ''}` : 'Development build');
+const COVERS = process.env.MANUAL_COVERS
+  || `Covers the ANAN Core ${TAG_VERSION ?? 'development'} release · ANAN G2 / G2 Ultra / G2-1K / G2E and desktop`;
 
 marked.setOptions({ gfm: true, breaks: false });
 mkdirSync(BUILD, { recursive: true });
