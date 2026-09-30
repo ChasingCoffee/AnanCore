@@ -18,7 +18,7 @@ $stagedDir = Join-Path $repoRoot "Zeus.Plugins.Host\runtimes\$rid\native"
 $builtDll = Join-Path $buildDir "$Configuration\zeus-vst-bridge.dll"
 
 if ($InitSubmodules) {
-    git -C $repoRoot submodule update --init native/zeus-vst-bridge/third_party/vst3sdk
+    git -C $repoRoot submodule update --init native/zeus-vst-bridge/third_party/vst3sdk native/zeus-vst-bridge/third_party/clap
     git -C (Join-Path $bridgeRoot "third_party\vst3sdk") submodule update --init base pluginterfaces public.sdk cmake
 }
 

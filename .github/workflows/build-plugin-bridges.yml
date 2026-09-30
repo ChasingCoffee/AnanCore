@@ -1,7 +1,8 @@
 name: Build Plugin Bridges
 
 # Builds the native audio-plugin host bridges for every shipping RID:
-#   zeus-vst-bridge (VST3, vst3sdk submodule)  win-x64 win-arm64 osx-arm64 osx-x64 linux-x64 linux-arm64
+#   zeus-vst-bridge (VST3 + CLAP; vst3sdk and clap submodules)
+#                                              win-x64 win-arm64 osx-arm64 osx-x64 linux-x64 linux-arm64
 #   zeus-au-bridge  (Audio Units)              osx-arm64 osx-x64
 # Each leg uploads a `plugin-bridges-<rid>` artifact laid out as
 # Zeus.Plugins.Host/runtimes/<rid>/native/ — download and commit it, the same
@@ -61,10 +62,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Init vst3sdk submodule (hosting subset only)
+      - name: Init vst3sdk (hosting subset) + CLAP SDK submodules
         shell: bash
         run: |
-          git submodule update --init native/zeus-vst-bridge/third_party/vst3sdk
+          git submodule update --init native/zeus-vst-bridge/third_party/vst3sdk native/zeus-vst-bridge/third_party/clap
           git -C native/zeus-vst-bridge/third_party/vst3sdk submodule update --init base pluginterfaces public.sdk cmake
 
       - name: Install X11 headers (Linux editor hosting)
@@ -115,7 +116,7 @@ jobs:
         shell: bash
         run: |
           dest="staged/Zeus.Plugins.Host/runtimes/${{ matrix.rid }}/native"
-          want_vst="zvst_init zvst_load_vst3 zvst_process zvst_set_param zvst_unload zvst_shutdown zvst_describe zvst_editor_open zvst_editor_close zvst_editor_is_open zvst_get_latency_samples zvst_load_vst3_class zvst_get_state zvst_set_state"
+          want_vst="zvst_init zvst_load_vst3 zvst_process zvst_set_param zvst_unload zvst_shutdown zvst_describe zvst_editor_open zvst_editor_close zvst_editor_is_open zvst_get_latency_samples zvst_load_vst3_class zvst_get_state zvst_set_state zclap_init zclap_describe zclap_load zclap_process zclap_set_param zclap_unload zclap_get_latency_samples zclap_get_state zclap_set_state zclap_editor_open zclap_editor_close zclap_editor_is_open"
           case "${{ runner.os }}" in
             macOS)   syms=$(nm -gU "$dest/libzeus-vst-bridge.dylib"); aus=$(nm -gU "$dest/libzeus-au-bridge.dylib") ;;
             Linux)   syms=$(nm -D --defined-only "$dest/libzeus-vst-bridge.so") ;;
@@ -133,9 +134,10 @@ jobs:
           fi
           exit $missing
 
-      # Native ABI tests (native/zeus-vst-bridge/tests) against the test
-      # plug-in: load/process, class selection, state round-trip, 64-bit-only
-      # plug-ins, latency. Only where the runner can execute the build.
+      # Native ABI tests (native/zeus-vst-bridge/tests) against the VST3 and
+      # CLAP test plug-ins: load/process, class selection, state round-trip,
+      # 64-bit-only plug-ins, latency, CLAP threading. Only where the runner
+      # can execute the build.
       - name: Native bridge tests (ctest)
         if: matrix.can_run
         run: ctest --test-dir native/zeus-vst-bridge/build -C Release --output-on-failure

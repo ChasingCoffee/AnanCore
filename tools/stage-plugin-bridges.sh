@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$init_submodules" = 1 ]; then
-    git -C "$repo_root" submodule update --init native/zeus-vst-bridge/third_party/vst3sdk
+    git -C "$repo_root" submodule update --init native/zeus-vst-bridge/third_party/vst3sdk native/zeus-vst-bridge/third_party/clap
     git -C "$vst_root/third_party/vst3sdk" submodule update --init base pluginterfaces public.sdk cmake
 fi
 

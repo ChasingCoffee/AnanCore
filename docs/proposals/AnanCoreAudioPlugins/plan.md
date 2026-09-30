@@ -1,6 +1,6 @@
 # ANAN Core Audio Plugins (VST3 / AU / CLAP) — Working Plan
 
-**Status:** Phase 1 done (PR #1); Phase 2 done (PR #2); Phase 3 next — see the status notes under each phase
+**Status:** Phases 1–3 done (PRs #1–#3); Phase 4 (out-of-process host) next, after a design discussion — see the status notes under each phase
 **Date:** 2026-09-30
 **Branching:** `feature/<name>` off `freedv-in-core` in the ChasingCoffee fork; contributed upstream to Apache Labs once each phase is proven.
 **Companion doc:** [`ANAN_Core_Native_VST3_Host_Plan.md`](ANAN_Core_Native_VST3_Host_Plan.md) (the original proposal). This plan supersedes its framework/architecture choice (Sections 8–9, 19) because discovery found a partial in-process host already in the tree; its safety rules, TX invariants, and non-goals (Sections 4, 13, 15–16, 26, 35) still apply.
@@ -213,6 +213,8 @@ Each phase ends with a PR into `freedv-in-core` in the fork, green on macOS/Wind
 **Acceptance:** a CLAP effect loads in RX/TX on all three OSes with editor, state, and bypass parity with VST3.
 
 **Red-light for upstream:** new dependency (CLAP SDK).
+
+**Status — done.** CLAP SDK `1.2.10` (MIT) as a submodule; the CLAP host lives in the same native library as the VST3 host (`src/clap_bridge.cpp`, `include/zclap.h`, mirroring zvst function for function) and reaches .NET as a third `IVstBridgeNative` backend (`ClapBridgeNative`). Each instance runs on its own host loop (the plug-in's main thread: callbacks, timers, Linux fds, Windows/X11 editor events; the macOS main thread in desktop mode). Manifests use `format: "clap"` and reuse `vst3Path` / `vst3Uid` for the .clap path and plug-in id (documented in `PluginManifest`, no contract shape change). The one-click scan sweeps the standard VST3 and CLAP folders; CLAP entries register as "Name (CLAP)" so a plug-in installed in both formats doesn't collide. Probing, state, profiles, bypass and the load guard all apply to CLAP unchanged. Verified: native ctest suite (51 checks, including the threading contract), .NET bridge + scan + probe tests, and a real CLAP (Software Artisans 950DAC) in desktop mode — scan, RX load, editor, settings restored after restart. Not supported: `request_restart`.
 
 ### Phase 4 — Plugin fault isolation (out-of-process host)
 
