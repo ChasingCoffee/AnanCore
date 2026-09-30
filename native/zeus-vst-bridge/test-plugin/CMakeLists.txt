@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
-# ZeusTestPlugin.vst3 — test fixture for the bridge (see zeus_test_plugin.cpp).
-# Produces a VST3 bundle at <build>/test-plugin/ZeusTestPlugin.vst3 with the
-# per-platform layout the SDK's hosting Module expects:
+# Test fixtures for the bridge, never shipped:
+#   ZeusTestPlugin.vst3 (zeus_test_plugin.cpp) and ZeusTestPlugin.clap
+#   (zeus_test_clap.c). The VST3 bundle uses the per-platform layout the
+#   SDK's hosting Module expects:
 #   macOS    ZeusTestPlugin.vst3/Contents/MacOS/ZeusTestPlugin
 #   Linux    ZeusTestPlugin.vst3/Contents/<uname -m>-linux/ZeusTestPlugin.so
 #   Windows  ZeusTestPlugin.vst3/Contents/<arch>-win/ZeusTestPlugin.vst3
 
+if(ZEUS_USE_VST3SDK)
 set(ZTP_SOURCES
     zeus_test_plugin.cpp
     # vstsinglecomponenteffect.cpp #includes vsteditcontroller.cpp itself.
@@ -84,4 +86,34 @@ else()
     set_target_properties(ZeusTestPlugin PROPERTIES
         SUFFIX ".so"
         LIBRARY_OUTPUT_DIRECTORY "$<1:${ZTP_BUNDLE}/Contents/${ZTP_MACHINE}-linux>")
+endif()
+endif()
+
+# ---- ZeusTestPlugin.clap -------------------------------------------------
+# macOS: a bundle (ZeusTestPlugin.clap/Contents/MacOS/ZeusTestPlugin).
+# Windows / Linux: a single shared library named ZeusTestPlugin.clap.
+if(ZEUS_USE_CLAP)
+    enable_language(C)
+    add_library(ZeusTestClap MODULE zeus_test_clap.c)
+    target_include_directories(ZeusTestClap PRIVATE ${CLAP_SDK_DIR}/include)
+    set_target_properties(ZeusTestClap PROPERTIES
+        C_VISIBILITY_PRESET hidden
+        PREFIX ""
+        OUTPUT_NAME ZeusTestPlugin)
+    if(APPLE)
+        set_target_properties(ZeusTestClap PROPERTIES
+            BUNDLE TRUE
+            BUNDLE_EXTENSION clap
+            LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_BINARY_DIR}>"
+            MACOSX_BUNDLE_GUI_IDENTIFIER org.openhpsdr.zeus.testclap
+            MACOSX_BUNDLE_BUNDLE_NAME ZeusTestPlugin)
+    else()
+        set_target_properties(ZeusTestClap PROPERTIES
+            SUFFIX ".clap"
+            LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_BINARY_DIR}>"
+            RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_BINARY_DIR}>")
+        if(UNIX)
+            target_link_libraries(ZeusTestClap PRIVATE m)
+        endif()
+    endif()
 endif()

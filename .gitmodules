@@ -4,3 +4,6 @@
 [submodule "native/zeus-vst-bridge/third_party/vst3sdk"]
 	path = native/zeus-vst-bridge/third_party/vst3sdk
 	url = https://github.com/steinbergmedia/vst3sdk.git
+[submodule "native/zeus-vst-bridge/third_party/clap"]
+	path = native/zeus-vst-bridge/third_party/clap
+	url = https://github.com/free-audio/clap.git

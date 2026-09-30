@@ -45,19 +45,47 @@ returns `ZVST_NOT_IMPLEMENTED`, so the rest of the tree builds and the host
 simply finds no plug-ins. Staging and CI builds pass `-DZEUS_VST_REQUIRE_SDK=ON`
 so a missing submodule fails loudly instead of shipping the stub.
 
-CLAP support ([CLAP SDK](https://github.com/free-audio/clap), MIT) is a
-planned addition in the same library. VST2 is **not** in scope
-(Steinberg withdrew distribution rights for new hosts in 2024 — see
-`docs/proposals/plugin-system-v2.md`).
+## CLAP
+
+The same library hosts CLAP plug-ins (`src/clap_bridge.cpp`, C ABI
+`include/zclap.h`, .NET side `Zeus.Plugins.Host.Audio.ClapBridgeNative`)
+with the header-only [CLAP SDK](https://github.com/free-audio/clap) (MIT),
+a submodule at `third_party/clap` pinned to `1.2.10`. The ABI mirrors zvst
+function for function and reuses its status codes, so the .NET host drives
+both formats through one interface.
+
+- **Main thread.** Each instance gets a host loop that is the plug-in's
+  main thread: a dedicated thread with an event loop (plug-in callbacks,
+  `timer-support`, and on Linux `posix-fd-support` plus the editor's X
+  connection; on Windows the editor's message pump), or on macOS the
+  process main thread when the host runs an AppKit loop. `init`, `activate`,
+  state, parameters and the GUI all run there; `process` runs on the
+  caller's audio thread, `start_processing` / `stop_processing` too.
+- **Ports.** Every declared audio port gets buffers; the main ports are
+  bridged to the host's mono/stereo geometry, other inputs read silence.
+  Plug-ins without a 1- or 2-channel main input and output (instruments)
+  are refused.
+- **Parameters** arrive as `CLAP_EVENT_PARAM_VALUE` events, the normalised
+  value mapped onto the parameter's plain range.
+- **State** is the plug-in's `clap.state` stream in a `ZCS1` blob;
+  **latency** from `clap.latency`; **editors** from `clap.gui` — embedded in
+  a bridge window where supported, otherwise the plug-in's floating window.
+- Not supported: `request_restart` (the plug-in keeps its current setup).
+
+Without the CLAP submodule, `src/clap_stub.cpp` exports the same ABI and
+loads nothing.
+
+VST2 is **not** in scope (Steinberg withdrew distribution rights for new
+hosts in 2024 — see `docs/proposals/plugin-system-v2.md`).
 
 ## Build
 
-Initialise the vendored SDK first (the submodule itself has nested
-submodules — `base`, `pluginterfaces`, `public.sdk` — that the hosting
-sources need; `vstgui` and the samples are not required):
+Initialise the vendored SDKs first (vst3sdk itself has nested submodules —
+`base`, `pluginterfaces`, `public.sdk` — that the hosting sources need;
+`vstgui` and the samples are not required):
 
 ```bash
-git submodule update --init native/zeus-vst-bridge/third_party/vst3sdk
+git submodule update --init native/zeus-vst-bridge/third_party/vst3sdk native/zeus-vst-bridge/third_party/clap
 git -C native/zeus-vst-bridge/third_party/vst3sdk \
     submodule update --init base pluginterfaces public.sdk cmake
 ```
@@ -75,8 +103,9 @@ Output:
 - Linux:   `build/libzeus-vst-bridge.so`
 - macOS:   `build/libzeus-vst-bridge.dylib` (minimum macOS 11.0)
 - Windows: `build/Release/zeus-vst-bridge.dll`
-- Test plug-in: `build/test-plugin/ZeusTestPlugin.vst3`
-  (`-DZEUS_VST_BUILD_TEST_PLUGIN=OFF` to skip)
+- Test plug-ins: `build/test-plugin/ZeusTestPlugin.vst3` and
+  `build/test-plugin/ZeusTestPlugin.clap` (`-DZEUS_VST_BUILD_TEST_PLUGIN=OFF`
+  to skip)
 
 Native tests: `ctest --test-dir build -C Release --output-on-failure`.
 
@@ -98,14 +127,17 @@ refresh the committed binaries:
   (`.github/workflows/build-plugin-bridges.yml`) and commit its
   `plugin-bridges-<rid>` artifacts.
 
-## Test plug-in
+## Test plug-ins
 
 `test-plugin/zeus_test_plugin.cpp` builds `ZeusTestPlugin.vst3`, a
 deterministic two-class effect ("Zeus Test Gain", "Zeus Test Invert") with a
-stereo sidechain bus, a bypass parameter and component state. It is never
-shipped. The environment variable `ZEUS_TEST_VST_FAULT` makes it misbehave on
-purpose (`crash-scan`, `hang-scan`, `crash-process`, `hang-process`,
-`nan-process`, `latency-N`) for isolation tests.
+stereo sidechain bus, a bypass parameter and component state.
+`test-plugin/zeus_test_clap.c` builds `ZeusTestPlugin.clap`: the same two
+effects plus an instrument the scanner must skip, and state that records
+whether the host kept CLAP's threading contract. Neither is shipped. The
+environment variable `ZEUS_TEST_VST_FAULT` makes them misbehave on purpose
+(`crash-scan`, `hang-scan`, `crash-process`, `hang-process`, `nan-process`,
+`latency-N`, VST3 only: `only-64`) for isolation tests.
 
 ## ABI
 
@@ -116,4 +148,4 @@ Bump `ZVST_ABI` in lockstep with any breaking change.
 ## License
 
 GPL-2.0-or-later (matches Zeus core). Statically links the MIT-licensed
-`vst3sdk` (and, once added, the CLAP SDK).
+`vst3sdk` and compiles against the MIT-licensed CLAP SDK headers.

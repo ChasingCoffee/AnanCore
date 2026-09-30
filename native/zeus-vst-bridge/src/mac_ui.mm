@@ -73,6 +73,17 @@ bool run_on_main(const std::function<void()>& fn, int timeout_ms) {
     return w->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms), [&] { return w->done; });
 }
 
+void run_on_main_async(std::function<void()> fn) {
+    if ([NSThread isMainThread]) {
+        fn();
+        return;
+    }
+    auto task = std::make_shared<std::function<void()>>(std::move(fn));
+    dispatch_async(dispatch_get_main_queue(), ^{
+        (*task)();
+    });
+}
+
 void* editor_window_create(const char* title, int width, int height, bool resizable,
                            std::function<void()> on_user_close) {
     @autoreleasepool {

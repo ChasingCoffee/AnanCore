@@ -26,6 +26,9 @@ bool is_main_thread();
 // still run later, so callers must not free what it references.
 bool run_on_main(const std::function<void()>& fn, int timeout_ms);
 
+// Queue fn on the main thread without waiting (runs inline on the main thread).
+void run_on_main_async(std::function<void()> fn);
+
 // ---- Editor window. MAIN THREAD ONLY. ----
 
 // A titled window whose content view the plug-in's IPlugView attaches to.
