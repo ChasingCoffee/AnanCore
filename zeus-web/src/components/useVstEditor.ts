@@ -43,6 +43,9 @@ export interface VstEditorState {
 const ENGINE_START_POLLS = 20;
 const ENGINE_START_INTERVAL_MS = 1000;
 
+// How often an open editor's state is re-read (see the poll in useVstEditor).
+export const EDITOR_STATE_POLL_MS = 1000;
+
 type EngineWaitResult = 'active' | 'crash' | 'gaveup';
 
 /**
@@ -127,6 +130,28 @@ export function useVstEditor(
       alive = false;
     };
   }, [base, enabled]);
+
+  // The operator can close the native window with its own close button,
+  // which the page never hears about. While the editor is open, re-read the
+  // server's state so the Open / Close control follows the real window.
+  useEffect(() => {
+    if (!enabled || !open || busy) return;
+    let alive = true;
+    const timer = window.setInterval(() => {
+      fetch(base)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j) => {
+          if (alive && j && j.open === false) setOpen(false);
+        })
+        .catch(() => {
+          /* transient — try again on the next tick */
+        });
+    }, EDITOR_STATE_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [base, enabled, open, busy]);
 
   const request = useCallback(
     async (wantOpen: boolean) => {
