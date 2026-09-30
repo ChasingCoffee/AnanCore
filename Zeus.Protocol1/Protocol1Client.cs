@@ -165,6 +165,13 @@ public sealed class Protocol1Client : IProtocol1Client
     // a no-op until the operator opts into iambic. See zeus-bks.
     private int _cwKeyerSpeedWpm;
     private int _cwKeyerMode; // CwKeyerMode as int for Interlocked
+    // cw_enable for register 0x0f (wire 0x1e), 0 / 1. Set by RadioService
+    // only in CWU/CWL with no host CW source keying. HL2 only on the wire —
+    // see CwConfigRotation.
+    private int _cwEnable;
+    // TX frequency register override in dial Hz (before the frequency
+    // correction factor, which SnapshotState applies). 0 = follow _vfoAHz.
+    private long _cwTxFreqHz;
     // TX audio front-end (external-audio-jacks re-port). mic_boost / mic_linein
     // ride the 0x12 frame on codec boards; mic_trs / mic_bias / line_in_gain
     // ride the 0x14 frame on HL2 (read-modify-write — see ControlFrame). All
@@ -1071,6 +1078,14 @@ public sealed class Protocol1Client : IProtocol1Client
     public void SetFrequencyCorrectionFactor(double factor) =>
         Interlocked.Exchange(ref _freqCorrectionBits, BitConverter.DoubleToInt64Bits(factor));
 
+    private long CorrectedCwTxFreqHz()
+    {
+        long hz = Interlocked.Read(ref _cwTxFreqHz);
+        if (hz <= 0) return 0;
+        double factor = BitConverter.Int64BitsToDouble(Interlocked.Read(ref _freqCorrectionBits));
+        return (long)Math.Round(hz * factor, MidpointRounding.AwayFromZero);
+    }
+
     public double FrequencyCorrectionFactor =>
         BitConverter.Int64BitsToDouble(Interlocked.Read(ref _freqCorrectionBits));
 
@@ -1574,6 +1589,28 @@ public sealed class Protocol1Client : IProtocol1Client
     }
 
     /// <summary>
+    /// Set cw_enable (C1 bit 0 of register 0x0f / wire 0x1e) — Thetis'
+    /// CWFWKeyer: true while the operator is in CW with the radio's own keyer.
+    /// Pushed continuously via the register round-robin; emitted on HL2 only
+    /// (<see cref="CwConfigRotation"/>).
+    /// </summary>
+    public void SetCwEnable(bool enabled)
+    {
+        Interlocked.Exchange(ref _cwEnable, enabled ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Pin the TX frequency register (0x01 / wire 0x02) to <paramref name="hz"/>
+    /// — the CW carrier on the dial — instead of the shared RX LO. Used while
+    /// cw_enable is set, because the radio's own keyer transmits straight on the
+    /// TX NCO. 0 releases the override (TX register follows SetVfoAHz again).
+    /// </summary>
+    public void SetCwTxFreqHz(long hz)
+    {
+        Interlocked.Exchange(ref _cwTxFreqHz, Math.Max(0, hz));
+    }
+
+    /// <summary>
     /// Set the TX audio front-end (external-audio-jacks re-port). Global,
     /// per-radio — not per-band. <paramref name="micBoost"/> /
     /// <paramref name="micLineIn"/> ride the 0x12 frame on Hermes-class codec
@@ -1747,6 +1784,8 @@ public sealed class Protocol1Client : IProtocol1Client
             PsTxAttnOnTxDb: Volatile.Read(ref _psTxAttnOnTxDb),
             CwKeyerSpeedWpm: Volatile.Read(ref _cwKeyerSpeedWpm),
             CwKeyerMode: (CwKeyerMode)Volatile.Read(ref _cwKeyerMode),
+            CwEnable: Volatile.Read(ref _cwEnable) != 0,
+            TxFreqHz: CorrectedCwTxFreqHz(),
             MicBoost: Volatile.Read(ref _micBoost) != 0,
             MicLineIn: Volatile.Read(ref _micLineIn) != 0,
             MicTrs: Volatile.Read(ref _micTrs) != 0,
@@ -2279,6 +2318,17 @@ public sealed class Protocol1Client : IProtocol1Client
         => PhaseRegisters(phase, mox, psArmed: false);
 
     /// <summary>
+    /// Whether the non-PS RX rotation carries the CW config register 0x0f
+    /// (wire 0x1e). HL2 only: its gateware reads the register as cwx_enable /
+    /// cw_ptt_delay, which change nothing unless the host sends CWX bits. On
+    /// classic Hermes / ANAN P1 gateware the same bit is internal_CW, which
+    /// arms the FPGA keyer and stops the TX IQ interpolator — not sent there,
+    /// so those boards' wire traffic stays byte-identical.
+    /// </summary>
+    internal static bool CwConfigRotation(in ControlFrame.CcState state)
+        => state.Board == HpsdrBoardKind.HermesLite2;
+
+    /// <summary>
     /// Whether the given snapshot selects the PS-armed 16-phase C&amp;C
     /// rotation. True only when PS is armed AND the board actually has a P1
     /// PS feedback path — HermesLite2 (mi0bot 4-DDC layout) or HermesC10
@@ -2308,7 +2358,7 @@ public sealed class Protocol1Client : IProtocol1Client
     /// case 2/3/4 wire-byte-by-wire-byte even though the comments diverge.
     /// </summary>
     internal static (ControlFrame.CcRegister first, ControlFrame.CcRegister second) PhaseRegisters(
-        int phase, bool mox, bool psArmed)
+        int phase, bool mox, bool psArmed, bool cwConfig = false)
     {
         if (psArmed)
         {
@@ -2377,6 +2427,9 @@ public sealed class Protocol1Client : IProtocol1Client
         // mode tracks the operator's CW panel — it's set before keying, so
         // the MOX branch doesn't waste a slot on it. Adding one phase drops
         // the RxFreq NCO refresh from 3-of-4 to 4-of-5 frames — negligible.
+        // With cwConfig (HL2) the same phase also carries the CW config
+        // register 0x0f (cw_enable) in place of that phase's RxFreq, so RxFreq
+        // still rides 4 of every 5 frames.
         int p = phase % 5;
         if (mox)
         {
@@ -2395,7 +2448,8 @@ public sealed class Protocol1Client : IProtocol1Client
             1 => (ControlFrame.CcRegister.RxFreq,        ControlFrame.CcRegister.DriveFilter),
             2 => (ControlFrame.CcRegister.Attenuator,    ControlFrame.CcRegister.RxFreq),
             3 => (ControlFrame.CcRegister.RxFreq,        ControlFrame.CcRegister.TxFreq),
-            _ => (ControlFrame.CcRegister.CwKeyerConfig, ControlFrame.CcRegister.RxFreq),
+            _ => (ControlFrame.CcRegister.CwKeyerConfig,
+                  cwConfig ? ControlFrame.CcRegister.CwConfig : ControlFrame.CcRegister.RxFreq),
         };
     }
 
@@ -2430,7 +2484,7 @@ public sealed class Protocol1Client : IProtocol1Client
                 // atten_on_Tx via the board-branched payload writer, and the
                 // RxFreq3/RxFreq4 slots it needs are already there.
                 bool psArmed = PsArmedRotation(in state);
-                var (first, second) = PhaseRegisters(phase, state.Mox, psArmed);
+                var (first, second) = PhaseRegisters(phase, state.Mox, psArmed, CwConfigRotation(in state));
                 phase = psArmed ? ((phase + 1) & 0xF) : ((phase + 1) % 5);
                 ControlFrame.BuildDataPacket(buf, NextEp2Seq(), first, second, in state, _txIqSource, _rxAudioSource);
                 rateWindowPkts++;

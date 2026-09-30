@@ -1294,6 +1294,7 @@ public sealed class RadioService : IDisposable
             // first key-down. Default mode straight makes this a no-op until
             // iambic is opted into. See zeus-bks.
             client.SetCwKeyerConfig(Volatile.Read(ref _cwKeyerWpm), (CwKeyerMode)Volatile.Read(ref _cwKeyerMode));
+            PushCwKeyerArm();
             // Replay PA settings into the fresh client — drive byte, OC masks,
             // and (for P2 downstream) PA-enable. Without this the client sits
             // at the protocol defaults (drive=0, OC=0) until something else
@@ -2291,11 +2292,10 @@ public sealed class RadioService : IDisposable
         {
             ActiveClient?.SetVfoAHz(Transverters.HardwareHz(CwOffset.EffectiveLoHz(mode, newVfoAHz)));
             // Entering/leaving CW toggles the P2 internal keyer (TxSpecific
-            // byte-5 CW-select). Re-push so a paddle keys the radio the moment
-            // the operator is in CW, and the bit clears on the way back to
-            // SSB/AM/FM. P1's keyer is mode-agnostic (always-on in CW via the
-            // 0x0B rotation) so this is a no-op there. Issue #1032.
-            PushCwToP2();
+            // byte-5 CW-select) and P1 cw_enable (register 0x0f). Re-push so a
+            // paddle keys the radio the moment the operator is in CW, and the
+            // bit clears on the way back to SSB/AM/FM. Issue #1032.
+            PushCwKeyerArm();
         }
 
         return Snapshot();
@@ -3211,7 +3211,8 @@ public sealed class RadioService : IDisposable
     /// endpoint whenever the operator changes WPM, keyer mode, or sidetone.
     /// No-op (cached only) when no radio is connected. See zeus-bks.
     /// <list type="bullet">
-    /// <item>P1: speed + mode go to C&amp;C register 0x0B (already wired).</item>
+    /// <item>P1: speed + mode go to C&amp;C register 0x0B (already wired);
+    /// cw_enable goes to register 0x0f (HL2).</item>
     /// <item>P2: speed + mode + sidetone arm the radio's internal keyer via
     /// the TxSpecific packet so a paddle on the rear KEY jack keys the
     /// transmitter — issue #1032.</item>
@@ -3223,7 +3224,7 @@ public sealed class RadioService : IDisposable
         Volatile.Write(ref _cwKeyerMode, (int)mode);
         lock (_sync) { _cwSidetoneHz = sidetoneHz; _cwSidetoneGainDb = sidetoneGainDb; }
         ActiveClient?.SetCwKeyerConfig(wpm, mode);
-        PushCwToP2();
+        PushCwKeyerArm();
     }
 
     // 1 while a host-driven CW source (CwEngine / MoxSource.Cwx — keyboard,
@@ -3235,20 +3236,21 @@ public sealed class RadioService : IDisposable
     // source (not host MOX) is deliberate: a paddle-driven internal-keyer TX
     // can raise host MOX via an opt-in PTT-IN→MOX setting, and gating on MOX
     // there would oscillate (disarm→drop→re-arm). Volatile int for lock-free
-    // cross-thread reads in PushCwToP2.
+    // cross-thread reads in PushCwKeyerArm.
     private int _hostCwKeying;
 
     /// <summary>
     /// Mark the host CW sender (CwEngine, <see cref="MoxSource.Cwx"/>) as
     /// keying or idle. While keying, the Protocol-2 internal keyer is disarmed
     /// (TxSpecific byte-5 cleared) so host-keyed and FPGA-keyed CW are mutually
-    /// exclusive — the pihpsdr model. Re-pushes immediately so the arm state
-    /// tracks the host sender edge. No-op on P1 (no <c>_p2Client</c>).
+    /// exclusive — the pihpsdr model — and P1 cw_enable (register 0x0f) is
+    /// cleared the same way. Re-pushes immediately so the arm state tracks the
+    /// host sender edge.
     /// </summary>
     public void SetHostCwKeying(bool active)
     {
         Volatile.Write(ref _hostCwKeying, active ? 1 : 0);
-        PushCwToP2();
+        PushCwKeyerArm();
     }
 
     /// <summary>
@@ -3263,15 +3265,42 @@ public sealed class RadioService : IDisposable
         return (byte)Math.Clamp((int)Math.Round(level), 0, 127);
     }
 
+    // Arm only in CW mode AND when the host CW sender is idle (see
+    // SetHostCwKeying) — never two T/R masters at once.
+    internal static bool RadioKeyerArmed(RxMode mode, bool hostCwKeying)
+        => mode is RxMode.CWU or RxMode.CWL && !hostCwKeying;
+
     /// <summary>
-    /// Push the internal-keyer config to the Protocol-2 client (no-op on P1,
-    /// whose keyer is driven via <c>ActiveClient</c>). The radio's internal
-    /// keyer is armed only in CW mode (byte-5 bit-1), so this is called on
-    /// connect, on a CW-settings change, and on every mode change so byte 5
-    /// toggles as the operator enters/leaves CW.
+    /// P1 side of <see cref="PushCwKeyerArm"/>: cw_enable, and while it is set
+    /// the TX frequency register pinned to the CW carrier — the displayed TX
+    /// frequency, with no pitch offset and regardless of CTUN — because the
+    /// radio's own keyer transmits straight on the TX NCO. The CW pitch only
+    /// places RX1. Host-keyed CW clears cw_enable, so it keeps the
+    /// LO = VFO ∓ pitch / IQ at ±pitch scheme (AlignLoForCwTx).
     /// </summary>
-    private void PushCwToP2()
+    private void PushP1CwArm(StateDto state)
     {
+        var p1 = ActiveClient;
+        if (p1 is null) return;
+        bool active = RadioKeyerArmed(state.Mode, Volatile.Read(ref _hostCwKeying) != 0);
+        p1.SetCwEnable(active);
+        p1.SetCwTxFreqHz(active ? Transverters.HardwareHz(TxCarrierHz(state)) : 0);
+    }
+
+    /// <summary>
+    /// Push the radio-keyer arm state to the connected client. The radio's
+    /// own keyer is armed only in CW mode, so this is called on connect, on a
+    /// CW-settings change, on every host-CW keying edge and on every mode
+    /// change so the arm bit toggles as the operator enters/leaves CW.
+    /// <list type="bullet">
+    /// <item>P1: cw_enable, C1 bit 0 of register 0x0f (Thetis CWFWKeyer).
+    /// The client emits it on HL2 only.</item>
+    /// <item>P2: the full internal-keyer config (TxSpecific byte 5 etc.).</item>
+    /// </list>
+    /// </summary>
+    private void PushCwKeyerArm()
+    {
+        PushP1CwArm(Snapshot());
         var p2 = _p2Client;
         if (p2 is null) return;
         // Snapshot mode + sidetone together under the one lock — the sidetone
@@ -3286,10 +3315,7 @@ public sealed class RadioService : IDisposable
             sidetoneHz = _cwSidetoneHz;
             sidetoneGainDb = _cwSidetoneGainDb;
         }
-        // Arm only in CW mode AND when the host CW sender is idle (see
-        // SetHostCwKeying) — never two T/R masters at once.
-        bool active = mode is RxMode.CWU or RxMode.CWL
-            && Volatile.Read(ref _hostCwKeying) == 0;
+        bool active = RadioKeyerArmed(mode, Volatile.Read(ref _hostCwKeying) != 0);
         p2.SetCwKeyerConfig(new Zeus.Protocol2.CwKeyerWireConfig
         {
             Active = active,
@@ -4570,6 +4596,8 @@ public sealed class RadioService : IDisposable
             _state = next;
         }
         _stateDirty = true;
+        // Every dial / mode / TX-target / XIT change moves the CW carrier.
+        PushP1CwArm(next);
         StateChanged?.Invoke(next);
     }
 
@@ -4858,7 +4886,7 @@ public sealed class RadioService : IDisposable
         // sidetone so a paddle on the rear KEY jack works on first connect
         // without touching the CW panel — mirrors the P1 connect push. Byte-5
         // CW-select only actually engages once the radio is in CW mode. #1032.
-        PushCwToP2();
+        PushCwKeyerArm();
         // Fire AFTER the state mutation + PA recompute so subscribers see a
         // fully-coherent RadioService when they read board kind / snapshot.
         if (client is not null) P2Connected?.Invoke(client);

@@ -967,4 +967,150 @@ public class ControlFrameTests
         Assert.Equal(0, (cc[2] >> 6) & 0x01);
         Assert.Equal(0, cc[1]);
     }
+
+    // --- CW config (register 0x0f / wire 0x1e) ------------------------------
+    // Thetis networkproto1.c case 13: C1 = cw_enable, C2 = sidetone level,
+    // C3 = RF delay, C4 = 0. HL2 gateware: rtl/dsopenhpsdr1.v:393-394.
+
+    [Theory]
+    [InlineData(false, 0x1E)]
+    [InlineData(true, 0x1F)]
+    public void CwConfig_Cc0_Is_0x1E_PlusMox(bool mox, byte expectedCc0)
+    {
+        Span<byte> cc = stackalloc byte[5];
+        var s = BaseState() with { Mox = mox };
+        ControlFrame.WriteCcBytes(cc, ControlFrame.CcRegister.CwConfig, s);
+        Assert.Equal(expectedCc0, cc[0]);
+    }
+
+    [Theory]
+    [InlineData(false, 0x00)]
+    [InlineData(true, 0x01)]
+    public void CwConfig_C1Bit0_FollowsCwEnable(bool cwEnable, byte expectedC1)
+    {
+        Span<byte> cc = stackalloc byte[5];
+        var s = BaseState() with { CwEnable = cwEnable };
+        ControlFrame.WriteCcBytes(cc, ControlFrame.CcRegister.CwConfig, s);
+        Assert.Equal(expectedC1, cc[1]);
+        // Sidetone level, RF delay and C4 stay 0 (power-on values).
+        Assert.Equal(0, cc[2]);
+        Assert.Equal(0, cc[3]);
+        Assert.Equal(0, cc[4]);
+    }
+
+    [Fact]
+    public void CwConfigRotation_Hl2Only()
+    {
+        foreach (var board in Enum.GetValues<HpsdrBoardKind>())
+        {
+            var s = BaseState() with { Board = board };
+            Assert.Equal(board == HpsdrBoardKind.HermesLite2, Protocol1Client.CwConfigRotation(in s));
+        }
+    }
+
+    [Fact]
+    public void PhaseTable_Hl2Rx_CarriesCwConfigOncePerCycle_AndKeepsRxFreq()
+    {
+        int cwConfigSlots = 0, rxFreqPhases = 0;
+        for (int phase = 0; phase < 5; phase++)
+        {
+            var (first, second) = Protocol1Client.PhaseRegisters(phase, mox: false, psArmed: false, cwConfig: true);
+            if (first == ControlFrame.CcRegister.CwConfig) cwConfigSlots++;
+            if (second == ControlFrame.CcRegister.CwConfig) cwConfigSlots++;
+            if (first == ControlFrame.CcRegister.RxFreq || second == ControlFrame.CcRegister.RxFreq) rxFreqPhases++;
+        }
+        Assert.Equal(1, cwConfigSlots);
+        Assert.Equal(4, rxFreqPhases);
+        // The on-board keyer config (0x0b) keeps its slot.
+        Assert.Equal(ControlFrame.CcRegister.CwKeyerConfig,
+            Protocol1Client.PhaseRegisters(4, mox: false, psArmed: false, cwConfig: true).first);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void PhaseTable_NeverCarriesCwConfig_WithoutCwConfigOrWhileKeyed(bool mox, bool psArmed)
+    {
+        for (int phase = 0; phase < 16; phase++)
+        {
+            // Without cwConfig (every non-HL2 board): never, in any table.
+            var (a, b) = Protocol1Client.PhaseRegisters(phase, mox, psArmed, cwConfig: false);
+            Assert.NotEqual(ControlFrame.CcRegister.CwConfig, a);
+            Assert.NotEqual(ControlFrame.CcRegister.CwConfig, b);
+            // With cwConfig: only the non-PS RX table carries it.
+            if (!mox && !psArmed) continue;
+            var (c, d) = Protocol1Client.PhaseRegisters(phase, mox, psArmed, cwConfig: true);
+            Assert.NotEqual(ControlFrame.CcRegister.CwConfig, c);
+            Assert.NotEqual(ControlFrame.CcRegister.CwConfig, d);
+        }
+    }
+
+    [Fact]
+    public void PhaseTable_WithoutCwConfig_IsUnchanged()
+    {
+        // Non-HL2 boards keep today's rotation byte-for-byte.
+        for (int phase = 0; phase < 5; phase++)
+        {
+            Assert.Equal(
+                Protocol1Client.PhaseRegisters(phase, mox: false),
+                Protocol1Client.PhaseRegisters(phase, mox: false, psArmed: false, cwConfig: false));
+        }
+        Assert.Equal(
+            (ControlFrame.CcRegister.CwKeyerConfig, ControlFrame.CcRegister.RxFreq),
+            Protocol1Client.PhaseRegisters(4, mox: false));
+    }
+
+    [Theory]
+    [InlineData(HpsdrBoardKind.HermesLite2, 0xF6)]
+    [InlineData(HpsdrBoardKind.Hermes, 0xFE)]
+    [InlineData(HpsdrBoardKind.OrionMkII, 0xFE)]
+    public void BuildDataPacket_MasksCwxBits_InILowByte(HpsdrBoardKind board, int expectedILow)
+    {
+        // HL2 reads CWX key (bit 0) and CWX PTT (bit 3) from the TX I-sample
+        // low byte while cw_enable is set; other boards only get bit 0 cleared.
+        var buf = new byte[1032];
+        var state = BaseState() with { Board = board, Mox = true, DriveLevel = 0x80 };
+        var src = new ConstIqSource(i: 0x20FF, q: 0x20FF);
+
+        ControlFrame.BuildDataPacket(
+            buf, 1,
+            ControlFrame.CcRegister.Config,
+            ControlFrame.CcRegister.RxFreq,
+            state, src);
+
+        // First USB frame payload starts at 8 (header) + 8 (sync + C&C).
+        Assert.Equal(expectedILow, buf[16 + 5]);
+        Assert.Equal(0xFE, buf[16 + 7]); // Q-low: bit 0 only, every board
+    }
+
+    [Fact]
+    public void TxFreqOverride_OnlyMovesTheTxRegister()
+    {
+        // CWU, dial 14.046500 with CTUN: RX LO sits elsewhere (here the frozen
+        // centre 14.041035); the TX register must carry the dial.
+        var s = BaseState() with { VfoAHz = 14_041_035, CwEnable = true, TxFreqHz = 14_046_500 };
+        Span<byte> cc = stackalloc byte[5];
+
+        ControlFrame.WriteCcBytes(cc, ControlFrame.CcRegister.TxFreq, s);
+        Assert.Equal(0x02, cc[0]);
+        Assert.Equal(14_046_500u, BinaryPrimitives.ReadUInt32BigEndian(cc[1..5]));
+
+        foreach (var rx in new[] { ControlFrame.CcRegister.RxFreq, ControlFrame.CcRegister.RxFreq2,
+                                   ControlFrame.CcRegister.RxFreq3, ControlFrame.CcRegister.RxFreq4 })
+        {
+            ControlFrame.WriteCcBytes(cc, rx, s);
+            Assert.Equal(14_041_035u, BinaryPrimitives.ReadUInt32BigEndian(cc[1..5]));
+        }
+    }
+
+    [Fact]
+    public void TxFreqOverride_Zero_FollowsVfoA()
+    {
+        var s = BaseState() with { VfoAHz = 14_045_900 };
+        Span<byte> cc = stackalloc byte[5];
+        ControlFrame.WriteCcBytes(cc, ControlFrame.CcRegister.TxFreq, s);
+        Assert.Equal(14_045_900u, BinaryPrimitives.ReadUInt32BigEndian(cc[1..5]));
+    }
 }
