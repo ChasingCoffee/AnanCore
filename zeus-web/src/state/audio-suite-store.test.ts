@@ -995,4 +995,65 @@ describe('audio-suite-store platform affordance', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe('boom');
   });
+
+  it('sends the plugin format with a folder scan', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/scan-vst-directory')) {
+        return response({ directory: '/clap', registered: [], skipped: [], errors: [] });
+      }
+      if (url.endsWith('/chain/order')) return response({ pluginIds: [] });
+      return response({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAudioSuiteStore.getState().scanVstDirectory('/clap', 'tx', 'clap');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/tx-audio-suite/scan-vst-directory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: '/clap', route: 'tx', format: 'clap' }),
+    });
+  });
+
+  it('loads and saves the plugin scan folders', async () => {
+    const saved = {
+      vst3: ['/my/vst3'],
+      clap: ['/std/clap'],
+      vst3Custom: true,
+      clapCustom: false,
+      defaultVst3: ['/std/vst3'],
+      defaultClap: ['/std/clap'],
+    };
+    const fetchMock = vi.fn<typeof fetch>(async () => response(saved));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAudioSuiteStore.getState().loadScanPaths();
+    expect(useAudioSuiteStore.getState().scanPaths).toEqual(saved);
+
+    const res = await useAudioSuiteStore.getState().saveScanPaths(['/my/vst3'], []);
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/audio-suite/plugin-scan-paths', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vst3: ['/my/vst3'], clap: [] }),
+    });
+  });
+
+  it('clears scanned plugins and reports the counts', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url === '/api/plugins/scanned/clear') return response({ removed: 3, deferred: 1 });
+      if (url.endsWith('/chain/order')) return response({ pluginIds: [] });
+      return response({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    useAudioSuiteStore.setState({ selectedChainId: 'com.openhpsdr.zeus.vst.x' });
+
+    const res = await useAudioSuiteStore.getState().clearScannedPlugins();
+
+    expect(res).toEqual({ ok: true, removed: 3, deferred: 1 });
+    expect(fetchMock).toHaveBeenCalledWith('/api/plugins/scanned/clear', { method: 'POST' });
+    expect(useAudioSuiteStore.getState().selectedChainId).toBeNull();
+  });
 });

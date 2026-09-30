@@ -1409,8 +1409,10 @@
   color: var(--fg-2);
 }
 
-.text-input-dialog-field input {
+.text-input-dialog-field input,
+.text-input-dialog-field textarea {
   width: 100%;
+  box-sizing: border-box;
   padding: 7px 10px;
   color: var(--fg-0);
   background: var(--bg-0);
@@ -1419,7 +1421,16 @@
   font: 500 12px/1.2 var(--font-sans);
 }
 
-.text-input-dialog-field input:focus {
+.text-input-dialog-field textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.text-input-dialog-field input:focus,
+.text-input-dialog-field textarea:focus {
   outline: 1px solid var(--accent);
   outline-offset: 0;
   border-color: var(--accent);

@@ -36,8 +36,12 @@ export type PluginUiDto = {
   panels: PluginPanelDto[];
 };
 
+export type AudioPluginFormat = 'vst3' | 'clap' | 'au';
+
 export type PluginAudioDto = {
   vst3Path?: string | null;
+  /** Hosting format of a scanned plugin; older servers omit it (VST3). */
+  format: AudioPluginFormat;
   slot: string;
   channels: number;
   sampleRate: number;
@@ -190,6 +194,7 @@ function parseAudio(raw: unknown): PluginAudioDto | null {
   const o = raw as Record<string, unknown>;
   return {
     vst3Path: typeof o.vst3Path === 'string' ? o.vst3Path : null,
+    format: o.format === 'clap' || o.format === 'au' ? o.format : 'vst3',
     slot: asString(o.slot),
     channels: asNumber(o.channels),
     sampleRate: asNumber(o.sampleRate),

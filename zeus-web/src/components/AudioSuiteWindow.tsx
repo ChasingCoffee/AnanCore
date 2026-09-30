@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Power, Star } from 'lucide-react';
 import { usePluginPanels } from '../plugins/runtime/usePluginPanels';
 import type { RegisteredPluginPanel } from '../plugins/runtime/pluginRuntime';
+import type { AudioPluginFormat } from '../plugins/api/plugins';
 import { AudioChainMeters } from './AudioChainMeters';
 import {
   AUDIO_SUITE_WINDOW_MIN_WIDTH,
@@ -27,6 +28,7 @@ import {
 } from '../state/audio-suite-store';
 import { ConfirmDialog } from '../layout/ConfirmDialog';
 import { TextInputDialog } from '../layout/TextInputDialog';
+import { PluginScanPathsDialog } from './PluginScanPathsDialog';
 import { TxAudioProfileBar } from './TxAudioProfileBar';
 import { useTxAudioProfileStore } from '../state/tx-audio-profile-store';
 
@@ -522,12 +524,13 @@ interface PluginSidebarProps {
   onUninstall(pluginId: string): void;
   onParkedDragStart(pluginId: string): (e: React.DragEvent) => void;
   onParkedDragEnd(): void;
-  onScanDirectory(): void;
-  onScanDefault(): void;
-  onScanBothDefault(): void;
-  /** Scan the OS AudioComponent registry for AUv2 effects (macOS only). */
-  onScanAu(): void;
-  /** Audio Units are hostable (macOS) — gates the "Scan AU" control. */
+  /** Scan one kind of plugin (or all of them) into this suite, or both suites. */
+  onScan(kind: PluginScanKind, bothSuites: boolean): void;
+  /** Open the VST3 / CLAP scan-folder editor. */
+  onSetPaths(): void;
+  /** Forget every scanned plugin (after the button's two-click confirm). */
+  onClearScanned(): void;
+  /** Audio Units are hostable (macOS) — gates the AU scan and filter. */
   auSupported: boolean;
   scanning: boolean;
   favoriteVstIds: ReadonlySet<string>;
@@ -559,10 +562,9 @@ function PluginSidebar({
   onUninstall,
   onParkedDragStart,
   onParkedDragEnd,
-  onScanDirectory,
-  onScanDefault,
-  onScanBothDefault,
-  onScanAu,
+  onScan,
+  onSetPaths,
+  onClearScanned,
   auSupported,
   scanning,
   favoriteVstIds,
@@ -582,6 +584,58 @@ function PluginSidebar({
   // Filter the Available list — essential once a scan brings in hundreds of
   // plugins. Matches the display name and the plugin id, case-insensitive.
   const [query, setQuery] = useState('');
+  // Format filter: one plugin installed as VST3, CLAP and AU shows up three
+  // times under All.
+  const [formatFilter, setFormatFilter] = useState<PluginFormatFilter>(() =>
+    readStored(FORMAT_FILTER_KEY, 'all', (v): v is PluginFormatFilter =>
+      (PLUGIN_FORMAT_FILTERS as readonly string[]).includes(v)),
+  );
+  const chooseFormatFilter = (f: PluginFormatFilter) => {
+    setFormatFilter(f);
+    writeStored(FORMAT_FILTER_KEY, f);
+  };
+  const effectiveFilter = formatFilter === 'au' && !auSupported ? 'all' : formatFilter;
+  const [bothSuites, setBothSuites] = useState(false);
+  const [clearArmed, setClearArmed] = useState(false);
+  useEffect(() => {
+    if (!clearArmed) return;
+    const t = window.setTimeout(() => setClearArmed(false), 4000);
+    return () => window.clearTimeout(t);
+  }, [clearArmed]);
+
+  // Drag the browser's right edge to see more of long plugin names.
+  const [width, setWidth] = useState(() =>
+    clampSidebarWidth(Number(readStored(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT_WIDTH), (v) => /^\d+$/.test(v)))),
+  );
+  const onResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = width;
+    const target = e.currentTarget;
+    target.setPointerCapture(e.pointerId);
+    let latest = startWidth;
+    const move = (ev: PointerEvent) => {
+      latest = clampSidebarWidth(startWidth + ev.clientX - startX);
+      setWidth(latest);
+    };
+    const up = () => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', up);
+      writeStored(SIDEBAR_WIDTH_KEY, String(latest));
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up);
+    target.addEventListener('pointercancel', up);
+  };
+  const onResizeKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === 'ArrowLeft' ? -16 : e.key === 'ArrowRight' ? 16 : 0;
+    if (!step) return;
+    e.preventDefault();
+    const next = clampSidebarWidth(width + step);
+    setWidth(next);
+    writeStored(SIDEBAR_WIDTH_KEY, String(next));
+  };
 
   if (collapsed) {
     return (
@@ -685,6 +739,9 @@ function PluginSidebar({
       >
         {panel.title || shortLabelFor(panel.pluginId, panel.title)}
       </span>
+      {panel.editorBacked === true && panel.format && (
+        <span style={formatBadgeStyle}>{FORMAT_LABELS[panel.format]}</span>
+      )}
       {/* Uninstall — VST-only, deletes the plugin from Zeus entirely (the
           built-in native plugins ship with the Audio Suite and aren't
           removed here). Distinct from the +/− add/park control beside it. */}
@@ -745,13 +802,14 @@ function PluginSidebar({
   };
 
   const q = query.trim().toLowerCase();
-  const filteredParked = q
-    ? parked.filter(
-        (p) =>
-          (p.title || '').toLowerCase().includes(q) ||
-          p.pluginId.toLowerCase().includes(q),
-      )
-    : parked;
+  const filteredParked = parked.filter(
+    (p) =>
+      (effectiveFilter === 'all' || (p.editorBacked === true && p.format === effectiveFilter)) &&
+      (!q ||
+        (p.title || '').toLowerCase().includes(q) ||
+        p.pluginId.toLowerCase().includes(q)),
+  );
+  const narrowed = q.length > 0 || effectiveFilter !== 'all';
   const favoriteParked = filteredParked.filter(
     (p) => p.editorBacked === true && favoriteVstIds.has(p.pluginId),
   );
@@ -766,8 +824,9 @@ function PluginSidebar({
   return (
     <div
       style={{
-        width: 200,
-        flex: '0 0 200px',
+        width,
+        flex: `0 0 ${width}px`,
+        position: 'relative',
         background: 'var(--bg-1)',
         borderRight: '1px solid var(--line)',
         display: 'flex',
@@ -776,6 +835,32 @@ function PluginSidebar({
         ...stickyStyle,
       }}
     >
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize plugin browser"
+        aria-valuemin={SIDEBAR_MIN_WIDTH}
+        aria-valuemax={SIDEBAR_MAX_WIDTH}
+        aria-valuenow={width}
+        tabIndex={0}
+        title="Drag to resize (double-click to reset)"
+        onPointerDown={onResizeStart}
+        onKeyDown={onResizeKey}
+        onDoubleClick={() => {
+          setWidth(SIDEBAR_DEFAULT_WIDTH);
+          writeStored(SIDEBAR_WIDTH_KEY, String(SIDEBAR_DEFAULT_WIDTH));
+        }}
+        style={{
+          position: 'absolute',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          width: 6,
+          cursor: 'col-resize',
+          zIndex: 2,
+          touchAction: 'none',
+        }}
+      />
       <div
         style={{
           display: 'flex',
@@ -840,6 +925,24 @@ function PluginSidebar({
             outline: 'none',
           }}
         />
+        <div
+          role="radiogroup"
+          aria-label="Show plugin format"
+          style={{ display: 'flex', gap: 4, marginTop: 6 }}
+        >
+          {PLUGIN_FORMAT_FILTERS.filter((f) => f !== 'au' || auSupported).map((f) => (
+            <button
+              key={f}
+              type="button"
+              role="radio"
+              aria-checked={effectiveFilter === f}
+              onClick={() => chooseFormatFilter(f)}
+              style={formatFilterStyle(effectiveFilter === f)}
+            >
+              {f === 'all' ? 'All' : FORMAT_LABELS[f]}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div
@@ -856,7 +959,7 @@ function PluginSidebar({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={groupLabelStyle}>
               Favorites · {favoriteParked.length}
-              {q && favoriteParked.length !== favoriteTotal ? ` / ${favoriteTotal}` : ''}
+              {narrowed && favoriteParked.length !== favoriteTotal ? ` / ${favoriteTotal}` : ''}
             </span>
             {favoriteParked.map((p) => row(p, false))}
           </div>
@@ -866,17 +969,21 @@ function PluginSidebar({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span style={groupLabelStyle}>
               Available · {regularParked.length}
-              {q && regularParked.length !== regularTotal ? ` / ${regularTotal}` : ''}
+              {narrowed && regularParked.length !== regularTotal ? ` / ${regularTotal}` : ''}
             </span>
             {parked.length === 0 && (
               <span style={emptyHintStyle}>
                 {vstMode
-                  ? 'No VST3 plugins available — use Scan for VSTs below.'
+                  ? 'No plugins available — use the Scan buttons below.'
                   : 'All installed plugins are in the chain.'}
               </span>
             )}
             {parked.length > 0 && filteredParked.length === 0 && (
-              <span style={emptyHintStyle}>No plugins match “{query.trim()}”.</span>
+              <span style={emptyHintStyle}>
+                {q
+                  ? `No ${effectiveFilter === 'all' ? '' : FORMAT_LABELS[effectiveFilter] + ' '}plugins match “${query.trim()}”.`
+                  : `No ${effectiveFilter === 'all' ? '' : FORMAT_LABELS[effectiveFilter] + ' '}plugins available.`}
+              </span>
             )}
             {regularParked.map((p) => row(p, false))}
           </div>
@@ -897,44 +1004,69 @@ function PluginSidebar({
             gap: 6,
           }}
         >
-          <button
-            type="button"
-            onClick={onScanDefault}
-            disabled={scanning}
-            title="Scan the standard VST3 and CLAP folders and register plugins for this audio suite"
-            style={scanBtnStyle(scanning, true)}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+            {SCAN_KINDS.filter((k) => k.kind !== 'au' || auSupported).map((k) => (
+              <button
+                key={k.kind}
+                type="button"
+                onClick={() => onScan(k.kind, bothSuites)}
+                disabled={scanning}
+                title={k.title(bothSuites)}
+                style={scanBtnStyle(scanning, k.kind === 'all')}
+              >
+                {k.label}
+              </button>
+            ))}
+          </div>
+          <label
+            style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, color: 'var(--fg-2)' }}
+            title="Register scanned plugins in both the TX and RX audio suites"
           >
-            {scanning ? 'Scanning...' : 'Scan VSTs'}
-          </button>
-          <button
-            type="button"
-            onClick={onScanBothDefault}
-            disabled={scanning}
-            title="Scan the standard VST3 and CLAP folders for both audio suites"
-            style={scanBtnStyle(scanning, false)}
-          >
-            Scan Both Suites
-          </button>
-          <button
-            type="button"
-            onClick={onScanDirectory}
-            disabled={scanning}
-            title="Scan a specific folder for VST3 and CLAP plugins and add them to the rack"
-            style={scanBtnStyle(scanning, false)}
-          >
-            + Add VST folder
-          </button>
-          {auSupported && (
+            <input
+              type="checkbox"
+              checked={bothSuites}
+              onChange={(e) => setBothSuites(e.target.checked)}
+              style={{ margin: 0 }}
+            />
+            Both suites (TX and RX)
+          </label>
+          {scanning && (
+            <span style={{ ...emptyHintStyle, textAlign: 'center' }}>Scanning…</span>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
             <button
               type="button"
-              onClick={onScanAu}
+              onClick={onSetPaths}
               disabled={scanning}
-              title="Scan installed Audio Units (macOS) and add them to the rack — hosted in-process"
+              title="Choose the folders Scan VST3 and Scan CLAP search"
               style={scanBtnStyle(scanning, false)}
             >
-              {scanning ? 'Scanning...' : 'Scan AU'}
+              Set paths…
             </button>
-          )}
+            <button
+              type="button"
+              onClick={() => {
+                if (clearArmed) {
+                  setClearArmed(false);
+                  onClearScanned();
+                } else {
+                  setClearArmed(true);
+                }
+              }}
+              disabled={scanning}
+              title={
+                clearArmed
+                  ? 'Click again to forget every scanned plugin'
+                  : 'Forget every scanned plugin (VST3, CLAP, AU) in both suites so the next scan starts fresh. Plugin files are not touched.'
+              }
+              style={{
+                ...scanBtnStyle(scanning, false),
+                ...(clearArmed ? { borderColor: 'var(--tx)', color: 'var(--tx)' } : {}),
+              }}
+            >
+              {clearArmed ? 'Confirm?' : 'Clear DB'}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -960,6 +1092,92 @@ function scanBtnStyle(scanning: boolean, primary: boolean): React.CSSProperties 
     fontFamily: 'inherit',
   };
 }
+
+export type PluginScanKind = 'all' | AudioPluginFormat;
+
+/** Scan buttons, in alphabetical order (All first). */
+const SCAN_KINDS: {
+  kind: PluginScanKind;
+  label: string;
+  title: (bothSuites: boolean) => string;
+}[] = [
+  {
+    kind: 'all',
+    label: 'Scan All',
+    title: (b) => `Scan the VST3 and CLAP folders and Audio Units into ${b ? 'both suites' : 'this suite'}`,
+  },
+  {
+    kind: 'au',
+    label: 'Scan AU',
+    title: (b) => `Scan installed Audio Units into ${b ? 'both suites' : 'this suite'}`,
+  },
+  {
+    kind: 'clap',
+    label: 'Scan CLAP',
+    title: (b) => `Scan the CLAP folders (Set paths…) into ${b ? 'both suites' : 'this suite'}`,
+  },
+  {
+    kind: 'vst3',
+    label: 'Scan VST3',
+    title: (b) => `Scan the VST3 folders (Set paths…) into ${b ? 'both suites' : 'this suite'}`,
+  },
+];
+
+type PluginFormatFilter = 'all' | AudioPluginFormat;
+const PLUGIN_FORMAT_FILTERS = ['all', 'au', 'clap', 'vst3'] as const;
+const FORMAT_LABELS: Record<AudioPluginFormat, string> = { au: 'AU', clap: 'CLAP', vst3: 'VST3' };
+const FORMAT_FILTER_KEY = 'zeus.audioSuite.pluginFormatFilter';
+const SIDEBAR_WIDTH_KEY = 'zeus.audioSuite.pluginBrowserWidth';
+const SIDEBAR_DEFAULT_WIDTH = 200;
+const SIDEBAR_MIN_WIDTH = 160;
+const SIDEBAR_MAX_WIDTH = 520;
+const clampSidebarWidth = (w: number) =>
+  Number.isFinite(w)
+    ? Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)))
+    : SIDEBAR_DEFAULT_WIDTH;
+
+// Browser storage is a per-viewer nicety here and may be unavailable.
+function readStored<T extends string>(key: string, fallback: T, valid: (v: string) => v is T): T;
+function readStored(key: string, fallback: string, valid: (v: string) => boolean): string;
+function readStored(key: string, fallback: string, valid: (v: string) => boolean): string {
+  try {
+    const v = window.localStorage.getItem(key);
+    return v !== null && valid(v) ? v : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeStored(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    /* unavailable — keep the in-memory value */
+  }
+}
+
+function formatFilterStyle(active: boolean): React.CSSProperties {
+  return {
+    flex: 1,
+    padding: '3px 0',
+    borderRadius: 3,
+    border: '1px solid ' + (active ? 'var(--accent)' : 'var(--line)'),
+    background: active ? 'var(--accent)' : 'var(--bg-2)',
+    color: active ? 'var(--fg-0)' : 'var(--fg-2)',
+    cursor: 'pointer',
+    fontSize: 9,
+    fontWeight: 600,
+    letterSpacing: 0.6,
+    fontFamily: 'inherit',
+  };
+}
+
+const formatBadgeStyle: React.CSSProperties = {
+  flex: '0 0 auto',
+  color: 'var(--fg-3)',
+  fontSize: 8,
+  fontWeight: 600,
+  letterSpacing: 0.6,
+};
 
 const groupLabelStyle: React.CSSProperties = {
   color: 'var(--fg-3)',
@@ -1352,7 +1570,6 @@ export function AudioSuiteWindow({
   const [profileDeletePending, setProfileDeletePending] = useState<string | null>(null);
   const [profileSaveOpen, setProfileSaveOpen] = useState(false);
   const [profileDialogError, setProfileDialogError] = useState<string | null>(null);
-  const [scanFolderOpen, setScanFolderOpen] = useState(false);
   const [armedUninstallId, setArmedUninstallId] = useState<string | null>(null);
   const [uninstallingPluginId, setUninstallingPluginId] = useState<string | null>(null);
   const [vstNotice, setVstNotice] = useState<{
@@ -1427,100 +1644,152 @@ export function AudioSuiteWindow({
     setProfileDeletePending(selectedProfile);
   };
 
-  // --- VST directory scan ------------------------------------------
-  // "Scan for VSTs" sweeps the standard VST3 and CLAP folders for the
-  // server's OS in one click (reported by the server; e.g. Windows' Common
-  // Files\VST3 + \CLAP and C:\VST PLUGINS, macOS' /Library and ~/Library
-  // Audio/Plug-Ins/VST3 + /CLAP, Linux' ~/.vst3, ~/.clap and /usr/lib/...).
-  // Whichever exist are scanned, the rest are skipped silently.
-  const defaultPluginDirs = useAudioSuiteStore((s) => s.defaultPluginDirs);
+  // --- Plugin scans ------------------------------------------------
+  // Scan VST3 / Scan CLAP sweep the operator's folders for that format (Set
+  // paths…; the OS's standard folders until changed), Scan AU the macOS
+  // AudioComponent registry, and Scan All does all three. Results land in
+  // this suite, or both with "Both suites" ticked.
+  const scanPaths = useAudioSuiteStore((s) => s.scanPaths);
+  const loadScanPaths = useAudioSuiteStore((s) => s.loadScanPaths);
+  const saveScanPaths = useAudioSuiteStore((s) => s.saveScanPaths);
+  const clearScannedPlugins = useAudioSuiteStore((s) => s.clearScannedPlugins);
   const [scanning, setScanning] = useState(false);
+  const [scanPathsOpen, setScanPathsOpen] = useState(false);
+  useEffect(() => {
+    void loadScanPaths();
+  }, [loadScanPaths]);
 
-  // Scan one or more folders, aggregate the results, and report. Folders
-  // that don't exist are treated as simply absent (not surfaced as errors)
-  // so a one-click sweep of common locations never nags about paths the
-  // operator doesn't use.
-  const runScan = async (dirs: string[], route: VstScanRoute = 'both') => {
-    setScanning(true);
-    const scanned: string[] = [];
-    const missing: string[] = [];
-    let registered = 0;
-    let skipped = 0;
-    const errors: string[] = [];
-    let hardError: string | null = null;
+  interface ScanTally {
+    label: string;
+    scanned: string[];
+    missing: string[];
+    registered: number;
+    skipped: number;
+    errors: string[];
+    hardError: string | null;
+  }
+
+  // Scan one format's folders. Folders that don't exist are simply absent
+  // (not errors), so a sweep of standard locations never nags about paths
+  // the operator doesn't use.
+  const scanFolders = async (
+    format: 'vst3' | 'clap',
+    dirs: string[],
+    scanRoute: VstScanRoute,
+  ): Promise<ScanTally> => {
+    const t: ScanTally = {
+      label: format === 'vst3' ? 'VST3' : 'CLAP',
+      scanned: [],
+      missing: [],
+      registered: 0,
+      skipped: 0,
+      errors: [],
+      hardError: null,
+    };
     for (const dir of dirs) {
-      const result = await scanVstDirectory(dir, route);
+      const result = await scanVstDirectory(dir, scanRoute, format);
       if (!result.ok) {
-        if (/not found|does not exist/i.test(result.error ?? '')) missing.push(dir);
-        else hardError = result.error ?? 'unknown error';
+        if (/not found|does not exist/i.test(result.error ?? '')) t.missing.push(dir);
+        else t.hardError = result.error ?? 'unknown error';
         continue;
       }
-      scanned.push(result.directory ?? dir);
-      registered += result.registered.length;
-      skipped += result.skipped.length;
-      errors.push(...result.errors.map((e) => e.message));
+      t.scanned.push(result.directory ?? dir);
+      t.registered += result.registered.length;
+      t.skipped += result.skipped.length;
+      t.errors.push(...result.errors.map((e) => e.message));
     }
-    setScanning(false);
+    return t;
+  };
 
-    if (scanned.length === 0 && hardError) {
-      setVstNotice({ tone: 'error', text: `VST scan failed:\n${hardError}` });
-      return;
+  const scanAu = async (scanRoute: VstScanRoute): Promise<ScanTally | null> => {
+    const result = await scanAuComponents(scanRoute);
+    const t: ScanTally = {
+      label: 'AU',
+      scanned: [],
+      missing: [],
+      registered: 0,
+      skipped: 0,
+      errors: [],
+      hardError: null,
+    };
+    if (!result.ok) {
+      t.hardError = result.error ?? 'unknown error';
+      return t;
     }
+    if (!result.supported) return null;
+    t.registered = result.registered.length;
+    t.skipped = result.skipped.length;
+    t.errors = result.errors.map((e) => e.message);
+    return t;
+  };
+
+  const onScan = async (kind: PluginScanKind, bothSuites: boolean) => {
+    const scanRoute: VstScanRoute = bothSuites ? 'both' : route;
+    setScanning(true);
+    const tallies: ScanTally[] = [];
+    try {
+      let paths = useAudioSuiteStore.getState().scanPaths;
+      if (!paths && kind !== 'au') {
+        await loadScanPaths();
+        paths = useAudioSuiteStore.getState().scanPaths;
+      }
+      if (kind === 'all' || kind === 'au') {
+        if (auSupported) {
+          const t = await scanAu(scanRoute);
+          if (t) tallies.push(t);
+        } else if (kind === 'au') {
+          setVstNotice({ tone: 'warn', text: 'Audio Units are available on macOS only.' });
+          return;
+        }
+      }
+      if (kind === 'all' || kind === 'clap') {
+        tallies.push(await scanFolders('clap', paths?.clap ?? [], scanRoute));
+      }
+      if (kind === 'all' || kind === 'vst3') {
+        tallies.push(await scanFolders('vst3', paths?.vst3 ?? [], scanRoute));
+      }
+    } finally {
+      setScanning(false);
+    }
+
     const lines: string[] = [];
-    if (scanned.length) lines.push('Scanned:', ...scanned.map((d) => `  ${d}`));
-    if (missing.length) {
-      lines.push('Skipped (not present):', ...missing.map((d) => `  ${d}`));
-    }
-    lines.push(
-      '',
-      `Registered: ${registered}`,
-      `Already present: ${skipped}`,
-      `Failed: ${errors.length}`,
-    );
-    if (errors.length > 0) {
-      lines.push('', ...errors.slice(0, 6).map((m) => `• ${m}`));
+    let failed = 0;
+    let hard = false;
+    for (const t of tallies) {
+      if (lines.length) lines.push('');
+      lines.push(
+        `${t.label}: ${t.registered} registered, ${t.skipped} already present, ${t.errors.length} failed`,
+      );
+      if (t.scanned.length) lines.push(...t.scanned.map((d) => `  ${d}`));
+      if (t.missing.length) lines.push(...t.missing.map((d) => `  ${d} (not present)`));
+      if (t.hardError) {
+        hard = true;
+        lines.push(`  scan failed: ${t.hardError}`);
+      }
+      lines.push(...t.errors.slice(0, 6).map((m) => `  • ${m}`));
+      if (t.errors.length > 6) lines.push(`  • …and ${t.errors.length - 6} more`);
+      failed += t.errors.length;
     }
     setVstNotice({
-      tone: errors.length > 0 ? 'warn' : 'ok',
+      tone: hard && tallies.every((t) => t.hardError) ? 'error' : failed > 0 || hard ? 'warn' : 'ok',
       text: lines.join('\n'),
     });
   };
 
-  // One-click sweep of the common VST3 locations.
-  const onScanDefaultVstDirectory = () => void runScan(defaultPluginDirs, route);
-  const onScanBothDefaultVstDirectory = () => void runScan(defaultPluginDirs, 'both');
-  // Prompt for a specific folder, then scan just that one.
-  const onScanVstDirectory = async () => {
-    setScanFolderOpen(true);
-  };
-
-  // Scan installed Audio Units (macOS) into this suite's insert chain. The
-  // AU registry is resolved server-side, so there is no folder prompt — one
-  // click sweeps the system components. Routes by suite: RX suite scans the
-  // RX insert chain, TX suite the TX chain.
-  const onScanAuComponents = async () => {
+  const onClearScanned = async () => {
     setScanning(true);
     try {
-      const result = await scanAuComponents(route);
-      if (!result.ok) {
-        setVstNotice({ tone: 'error', text: `AU scan failed:\n${result.error ?? 'unknown error'}` });
+      const res = await clearScannedPlugins();
+      if (!res.ok) {
+        setVstNotice({ tone: 'error', text: `Couldn't clear the plugin list: ${res.error ?? 'unknown error'}` });
         return;
-      }
-      if (!result.supported) {
-        setVstNotice({ tone: 'warn', text: 'Audio Units are available on macOS only.' });
-        return;
-      }
-      const lines = [
-        `Registered: ${result.registered.length}`,
-        `Already present: ${result.skipped.length}`,
-        `Failed: ${result.errors.length}`,
-      ];
-      if (result.errors.length > 0) {
-        lines.push('', ...result.errors.slice(0, 6).map((e) => `• ${e.message}`));
       }
       setVstNotice({
-        tone: result.errors.length > 0 ? 'warn' : 'ok',
-        text: lines.join('\n'),
+        tone: res.deferred > 0 ? 'warn' : 'ok',
+        text:
+          `Forgot ${res.removed} scanned plugin${res.removed === 1 ? '' : 's'}.` +
+          (res.deferred > 0 ? ` ${res.deferred} more will be removed when Zeus restarts.` : '') +
+          ' Scan to add plugins again.',
       });
     } finally {
       setScanning(false);
@@ -2000,10 +2269,9 @@ export function AudioSuiteWindow({
           }}
           onParkedDragStart={onParkedDragStart}
           onParkedDragEnd={onParkedDragEnd}
-          onScanDirectory={() => void onScanVstDirectory()}
-          onScanDefault={onScanDefaultVstDirectory}
-          onScanBothDefault={onScanBothDefaultVstDirectory}
-          onScanAu={() => void onScanAuComponents()}
+          onScan={(kind, both) => void onScan(kind, both)}
+          onSetPaths={() => setScanPathsOpen(true)}
+          onClearScanned={() => void onClearScanned()}
           auSupported={auSupported}
           scanning={scanning}
           favoriteVstIds={favoriteVstIdSet}
@@ -2191,21 +2459,16 @@ export function AudioSuiteWindow({
           )}
         </TextInputDialog>
       )}
-      {scanFolderOpen && (
-        <TextInputDialog
-          title="Scan VST folder"
-          label="Folder path"
-          initialValue={defaultPluginDirs[0] ?? ''}
-          placeholder={defaultPluginDirs[0] ?? ''}
-          confirmLabel="Scan Folder"
-          onCancel={() => setScanFolderOpen(false)}
-          onSubmit={(dir) => {
-            setScanFolderOpen(false);
-            void runScan([dir], route);
+      {scanPathsOpen && scanPaths && (
+        <PluginScanPathsDialog
+          paths={scanPaths}
+          onCancel={() => setScanPathsOpen(false)}
+          onSave={async (vst3, clap) => {
+            const res = await saveScanPaths(vst3, clap);
+            if (res.ok) setScanPathsOpen(false);
+            return res;
           }}
-        >
-          <p>Register every VST3 and CLAP plugin Zeus finds in this folder.</p>
-        </TextInputDialog>
+        />
       )}
     </div>
   );

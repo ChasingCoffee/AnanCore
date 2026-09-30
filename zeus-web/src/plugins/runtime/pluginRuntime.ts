@@ -7,7 +7,12 @@
 // plugin registers so it can show up in the workspace Add Panel modal.
 
 import { createElement, type ComponentType } from 'react';
-import { fetchInstalledPlugins, type PluginDto, type PluginPanelDto } from '../api/plugins';
+import {
+  fetchInstalledPlugins,
+  type AudioPluginFormat,
+  type PluginDto,
+  type PluginPanelDto,
+} from '../api/plugins';
 import { GenericVstPanel } from '../../components/GenericVstPanel';
 import { pluginAccessFor } from '../../state/user-access-store';
 
@@ -38,6 +43,9 @@ export interface RegisteredPluginPanel {
   // is its native editor window. The rack slot opens that window on a
   // header click instead of expanding an (empty) collapsible body.
   editorBacked?: boolean;
+  // Hosting format of a scanned plugin (editor-backed panels only) — the
+  // Audio Suite browser filters and badges on it.
+  format?: AudioPluginFormat;
 }
 
 type PluginModule = {
@@ -95,6 +103,7 @@ function maybeRegisterGenericAudioPanel(plugin: PluginDto): void {
     slot,
     component: () => createElement(GenericVstPanel, { pluginId: id, name, route }),
     editorBacked: true,
+    format: audio.format,
   });
 }
 

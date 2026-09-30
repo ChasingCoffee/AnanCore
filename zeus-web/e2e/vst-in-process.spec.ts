@@ -252,8 +252,11 @@ test('Windows operator adds VST3 in-process: Scan plugins on both rails, no engi
   const suite = await suitePromise;
   suite.on('pageerror', (err) => pageErrors.push(`suite: ${err.message}`));
   await suite.waitForLoadState();
-  await expect(suite.getByRole('button', { name: 'Scan VSTs' })).toBeVisible();
-  await expect(suite.getByRole('button', { name: /Add VST folder/ })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Scan All' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Scan CLAP' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Scan VST3' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: /Set paths/ })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Clear DB' })).toBeVisible();
 
   // Nothing tried to install or configure an engine.
   expect(world.installPosts).toBe(0);

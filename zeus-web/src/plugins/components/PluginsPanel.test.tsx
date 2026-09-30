@@ -314,6 +314,7 @@ describe('InstalledPlugins', () => {
           ui: null,
           audio: {
             vst3Path: 'C:\\VST PLUGINS\\TDR Nova.vst3',
+            format: 'vst3',
             slot: 'tx.post-leveler',
             channels: 1,
             sampleRate: 48000,
@@ -362,6 +363,7 @@ describe('InstalledPlugins', () => {
           ui: null,
           audio: {
             vst3Path: 'C:\\VST PLUGINS\\RNNoise.vst3',
+            format: 'vst3',
             slot: 'rx.post-demod',
             channels: 1,
             sampleRate: 48000,
