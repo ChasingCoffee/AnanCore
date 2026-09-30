@@ -883,11 +883,16 @@ describe('audio-suite-store platform affordance', () => {
     expect(useAudioSuiteStore.getState().bypassedPluginIds).toEqual([]);
   });
 
-  it('takes the default VST3 scan folders from the server', async () => {
-    const dirs = ['/Library/Audio/Plug-Ins/VST3', '/Users/op/Library/Audio/Plug-Ins/VST3'];
+  it('takes the default plug-in scan folders from the server', async () => {
+    const dirs = ['/Library/Audio/Plug-Ins/VST3', '/Library/Audio/Plug-Ins/CLAP'];
     const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/tx-audio-suite/vst-engine/install') {
-        return response({ engineSupported: false, auSupported: true, defaultVst3Dirs: dirs });
+        return response({
+          engineSupported: false,
+          auSupported: true,
+          defaultVst3Dirs: ['/Library/Audio/Plug-Ins/VST3'],
+          defaultPluginDirs: dirs,
+        });
       }
       return response({});
     });
@@ -895,10 +900,10 @@ describe('audio-suite-store platform affordance', () => {
 
     await useAudioSuiteStore.getState().loadEngineSupportFromServer();
 
-    expect(useAudioSuiteStore.getState().defaultVst3Dirs).toEqual(dirs);
+    expect(useAudioSuiteStore.getState().defaultPluginDirs).toEqual(dirs);
   });
 
-  it('keeps the Windows VST3 folders when the server does not report any', async () => {
+  it('falls back to VST3-only folders, then the Windows set', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
       if (String(input) === '/api/tx-audio-suite/vst-engine/install') {
         return response({ engineSupported: true, auSupported: false, defaultVst3Dirs: [] });
@@ -909,7 +914,7 @@ describe('audio-suite-store platform affordance', () => {
 
     await useAudioSuiteStore.getState().loadEngineSupportFromServer();
 
-    expect(useAudioSuiteStore.getState().defaultVst3Dirs).toEqual([
+    expect(useAudioSuiteStore.getState().defaultPluginDirs).toEqual([
       'C:\\Program Files\\Common Files\\VST3',
       'C:\\VST PLUGINS',
     ]);

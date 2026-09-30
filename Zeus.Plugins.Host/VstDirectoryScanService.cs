@@ -297,7 +297,7 @@ public sealed class VstDirectoryScanService
                     WriteStubAssembly(Path.Combine(pluginDir, StubAssemblyFile));
                     await File.WriteAllTextAsync(
                         Path.Combine(pluginDir, "plugin.json"),
-                        BuildManifestJson(id, routeName, cand.Vst3Abs, cand.Uid, slot),
+                        BuildManifestJson(id, routeName, cand.Vst3Abs, cand.Uid, slot, cand.Format),
                         ct).ConfigureAwait(false);
 
                     await _manager.ActivateAsync(pluginDir, ct).ConfigureAwait(false);
@@ -315,7 +315,12 @@ public sealed class VstDirectoryScanService
         return new ScanResult(directory, registered, skipped, errors);
     }
 
-    private sealed record VstCandidate(string Vst3Abs, string Name, string? Uid);
+    // Format "vst3" or "clap"; Vst3Abs is the plugin file/bundle either way.
+    private sealed record VstCandidate(string Vst3Abs, string Name, string? Uid, string Format = "vst3");
+
+    private static bool IsClap(string path) =>
+        path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .EndsWith(".clap", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Describe one .vst3 in a probe process. Failures (not loadable here,
@@ -344,7 +349,7 @@ public sealed class VstDirectoryScanService
             errors.Add(new ScanError(entry, $"skipped: {result.Message}"));
             return [];
         }
-        var found = CandidatesFromClasses(abs, fileName, result.Reply?.Classes ?? []);
+        var found = CandidatesFromClasses(abs, fileName, result.Reply?.Classes ?? [], IsClap(abs) ? "clap" : "vst3");
         if (found.Count == 0)
             errors.Add(new ScanError(entry, "skipped: no audio effects in this plugin (instrument only)"));
         return found;
@@ -357,11 +362,21 @@ public sealed class VstDirectoryScanService
     /// module keeps loading "the first effect", as before.
     /// </summary>
     private static IReadOnlyList<VstCandidate> CandidatesFromClasses(
-        string vst3Abs, string fileName, IReadOnlyList<VstPluginDescriptor> classes)
+        string vst3Abs, string fileName, IReadOnlyList<VstPluginDescriptor> classes, string format = "vst3")
     {
         var effects = classes
             .Where(c => !(c.Category ?? "").Contains("Instrument", StringComparison.OrdinalIgnoreCase))
             .ToList();
+        if (format == "clap")
+        {
+            // CLAP ids are explicit and stable: always pin the plug-in id. The
+            // " (CLAP)" suffix keeps a plug-in installed in both formats from
+            // colliding with its VST3 twin's generated id, and tells them apart.
+            return effects
+                .Select(c => new VstCandidate(vst3Abs,
+                    (string.IsNullOrWhiteSpace(c.Name) ? fileName : c.Name) + " (CLAP)", c.Uid, "clap"))
+                .ToList();
+        }
         if (effects.Count == 1)
         {
             var name = string.IsNullOrWhiteSpace(effects[0].Name) ? fileName : effects[0].Name;
@@ -370,6 +385,19 @@ public sealed class VstDirectoryScanService
         return effects
             .Select(c => new VstCandidate(vst3Abs, string.IsNullOrWhiteSpace(c.Name) ? fileName : c.Name, c.Uid))
             .ToList();
+    }
+
+    private static IVstBridgeNative? TryCreateClapScanBridge()
+    {
+        try
+        {
+            var b = new ClapBridgeNative();
+            return b.Init(ClapBridgeAbi.Current) == VstBridgeStatus.Ok ? b : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static IVstBridgeNative? TryCreateScanBridge()
@@ -401,6 +429,15 @@ public sealed class VstDirectoryScanService
         string entry, IVstBridgeNative? bridge, List<ScanError> errors, string fileName)
     {
         var vst3Abs = Path.GetFullPath(entry);
+
+        if (IsClap(vst3Abs))
+        {
+            var clap = TryCreateClapScanBridge();
+            var classes = clap is null ? [] : VstBridgeNative.Scan(clap, vst3Abs);
+            if (classes.Count > 0) return CandidatesFromClasses(vst3Abs, fileName, classes, "clap");
+            errors.Add(new ScanError(entry, "skipped (not a loadable CLAP on this platform)"));
+            return [];
+        }
 
         if (IsLoadableVst3(entry, out var reason))
         {
@@ -441,7 +478,8 @@ public sealed class VstDirectoryScanService
             catch { return; } // unreadable dir — skip
             foreach (var e in entries)
             {
-                if (e.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase))
+                if (e.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase) ||
+                    e.EndsWith(".clap", StringComparison.OrdinalIgnoreCase))
                 {
                     // Skip macOS AppleDouble sidecars (e.g. "._ReLife.vst3").
                     // These resource-fork shadow files travel next to the real
@@ -464,7 +502,8 @@ public sealed class VstDirectoryScanService
 
     private static string? ResolveExactVst3Entry(string path)
     {
-        if (!path.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!path.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase) &&
+            !path.EndsWith(".clap", StringComparison.OrdinalIgnoreCase)) return null;
         if (File.Exists(path) || Directory.Exists(path)) return Path.GetFullPath(path);
         return null;
     }
@@ -661,7 +700,8 @@ public sealed class VstDirectoryScanService
         string name,
         string vst3Path,
         string? vst3Uid = null,
-        string slot = "tx.post-leveler")
+        string slot = "tx.post-leveler",
+        string format = "vst3")
     {
         // Anonymous object keyed to the manifest's JsonPropertyName values
         // (camelCase). Most scanned VSTs route into the TX insert chain so they
@@ -677,12 +717,13 @@ public sealed class VstDirectoryScanService
             name,
             version = "1.0.0",
             author = "Scanned VST",
-            description = $"VST3 plugin registered from a scanned directory ({name}).",
+            description = $"{(format == "clap" ? "CLAP" : "VST3")} plugin registered from a scanned directory ({name}).",
             license = "Unknown",
             sdk = new { abi = 1, minVersion = "1.0.0" },
             entrypoint = new { assembly = StubAssemblyFile },
             audio = new
             {
+                format,
                 vst3Path,
                 vst3Uid,
                 slot,

@@ -13,9 +13,9 @@ namespace Zeus.Plugins.Host.Audio;
 ///
 /// Commands (after <see cref="Flag"/>):
 /// <list type="bullet">
-///   <item><c>describe &lt;path.vst3&gt;</c> — the module's audio-effect classes.</item>
-///   <item><c>load vst3 &lt;path.vst3&gt; [&lt;classUid&gt;]</c> — trial load: instantiate,
-///   process one block, unload.</item>
+///   <item><c>describe &lt;path.vst3|path.clap&gt;</c> — the module's plug-ins.</item>
+///   <item><c>load vst3|clap &lt;path&gt; [&lt;classUid | clap id&gt;]</c> — trial load:
+///   instantiate, process one block, unload.</item>
 ///   <item><c>load au &lt;type:subtype:manufacturer&gt;</c> — the same for an Audio Unit.</item>
 /// </list>
 /// The result is one JSON line on stdout (<see cref="PluginProbeReply"/>),
@@ -49,12 +49,14 @@ public static class PluginProbe
         {
             reply = args switch
             {
-                ["describe", var path] => Describe(new VstBridgeNative(), path),
+                ["describe", var path] => Describe(BridgeForPath(path), path),
                 ["load", "vst3", var path] => TrialLoad(new VstBridgeNative(), path, null),
                 ["load", "vst3", var path, var uid] => TrialLoad(new VstBridgeNative(), path, uid),
+                ["load", "clap", var path] => TrialLoad(new ClapBridgeNative(), path, null),
+                ["load", "clap", var path, var id] => TrialLoad(new ClapBridgeNative(), path, id),
                 ["load", "au", var id] => TrialLoad(new AuBridgeNative(), id, null),
                 _ => PluginProbeReply.Fail(VstBridgeStatus.InvalidArguments,
-                    "usage: --plugin-probe describe <path> | load vst3 <path> [uid] | load au <id>"),
+                    "usage: --plugin-probe describe <path> | load vst3|clap <path> [id] | load au <id>"),
             };
         }
         catch (Exception ex)
@@ -65,6 +67,11 @@ public static class PluginProbe
         stdout.Flush();
         return reply.Ok ? 0 : 1;
     }
+
+    private static IVstBridgeNative BridgeForPath(string path) =>
+        path.TrimEnd('/', '\\').EndsWith(".clap", StringComparison.OrdinalIgnoreCase)
+            ? new ClapBridgeNative()
+            : new VstBridgeNative();
 
     private static PluginProbeReply Describe(IVstBridgeNative bridge, string path)
     {

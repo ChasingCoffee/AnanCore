@@ -68,9 +68,9 @@ public sealed class PluginProbeRunner
 
     public ProbeResult TrialLoad(string format, string identity, string? classUid, CancellationToken ct = default)
     {
-        var fmt = string.Equals(format, "au", StringComparison.OrdinalIgnoreCase) ? "au" : "vst3";
+        var fmt = format.ToLowerInvariant() switch { "au" => "au", "clap" => "clap", _ => "vst3" };
         List<string> args = ["load", fmt, identity];
-        if (fmt == "vst3" && !string.IsNullOrEmpty(classUid)) args.Add(classUid);
+        if (fmt != "au" && !string.IsNullOrEmpty(classUid)) args.Add(classUid);
         return Run(args, LoadTimeout, ct);
     }
 

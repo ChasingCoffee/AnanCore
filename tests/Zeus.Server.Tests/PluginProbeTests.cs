@@ -115,6 +115,28 @@ public class PluginProbeTests : IDisposable
         Assert.True(guard.Check("vst3", Plugin!, null).Allowed);
     }
 
+    private static string? ClapPlugin() =>
+        Plugin is null ? null : Path.Combine(Path.GetDirectoryName(Plugin)!, "ZeusTestPlugin.clap");
+
+    [SkippableFact]
+    public void Clap_DescribeAndTrialLoad_GoThroughTheProbe()
+    {
+        Skip.If(Runner is null, SkipReason);
+        var clap = ClapPlugin()!;
+        Skip.If(!File.Exists(clap) && !Directory.Exists(clap), "ZeusTestPlugin.clap not built");
+
+        var described = Runner!.Describe(clap);
+        Assert.True(described.Ok, described.Message);
+        Assert.Contains(described.Reply!.Classes!, c => c.Uid == "org.openhpsdr.zeus.test.synth");
+
+        Assert.True(Runner.TrialLoad("clap", clap, "org.openhpsdr.zeus.test.invert").Ok);
+        var synth = Runner.TrialLoad("clap", clap, "org.openhpsdr.zeus.test.synth");
+        Assert.Equal(ProbeOutcome.Failed, synth.Outcome); // an instrument can't be an insert
+
+        Environment.SetEnvironmentVariable("ZEUS_TEST_VST_FAULT", "crash-scan");
+        Assert.Equal(ProbeOutcome.Crashed, Runner.Describe(clap).Outcome);
+    }
+
     [Fact]
     public void LoadGuard_WithoutAProbeHost_AllowsEverything()
     {

@@ -17,6 +17,8 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
     private readonly string _loadIdentity;
     private readonly string? _classUid;
     private readonly bool _isAudioUnit;
+    private readonly string _format; // "vst3" | "au" | "clap"
+    private readonly string _kind;   // for messages: "VST3" | "Audio Unit" | "CLAP"
     private readonly string _pluginRootPath;
     private readonly string _slot;
     private readonly ILogger? _log;
@@ -59,10 +61,15 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
 
         // Format selects the load identity. "au" loads a macOS Audio Unit by
         // its type:subtype:manufacturer triple (resolved from the OS registry,
-        // not a file); anything else (default "vst3") loads from a VST3 path.
-        // AudioPluginBridge picks the matching IVstBridgeNative backend; this
-        // class stays backend-agnostic.
+        // not a file); "vst3" (the default) and "clap" load from a file path
+        // (vst3Path), with vst3Uid naming the class / CLAP plug-in id within
+        // it. AudioPluginBridge picks the matching IVstBridgeNative backend;
+        // this class stays backend-agnostic.
         _isAudioUnit = string.Equals(manifestAudio.Format, "au", StringComparison.OrdinalIgnoreCase);
+        _format = _isAudioUnit ? "au"
+            : string.Equals(manifestAudio.Format, "clap", StringComparison.OrdinalIgnoreCase) ? "clap"
+            : "vst3";
+        _kind = _format switch { "au" => "Audio Unit", "clap" => "CLAP", _ => "VST3" };
         _loadIdentity = _isAudioUnit
             ? (manifestAudio.AuComponentId
                 ?? throw new ArgumentException("audio.auComponentId is required when audio.format is \"au\""))
@@ -166,14 +173,14 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
                 : Path.Combine(_pluginRootPath, _loadIdentity);
 
             if (!File.Exists(loadIdentity) && !Directory.Exists(loadIdentity))
-                throw new PluginLoadException($"VST3 path not found: {loadIdentity}");
+                throw new PluginLoadException($"{_kind} path not found: {loadIdentity}");
         }
 
         // Never load a plugin into this process that crashed, hung or refused
         // to load in a probe process (cached per plugin version).
         if (_loadGuard is not null)
         {
-            var (allowed, reason) = _loadGuard.Check(_isAudioUnit ? "au" : "vst3", loadIdentity, _classUid);
+            var (allowed, reason) = _loadGuard.Check(_format, loadIdentity, _classUid);
             if (!allowed)
                 throw new PluginLoadException($"'{DisplayName}' was not loaded: {reason}");
         }
@@ -193,7 +200,7 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
 
         if (status != VstBridgeStatus.Ok || handle == 0)
             throw new PluginLoadException(
-                $"{(_isAudioUnit ? "Audio Unit" : "VST3")} load failed for {loadIdentity} (status={status})");
+                $"{_kind} load failed for {loadIdentity} (status={status})");
 
         lock (_ctl)
         {
@@ -208,7 +215,7 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
 
         _log?.LogInformation(
             "{Kind} host loaded {Id} (channels={Channels} sr={SampleRate} block={Block} latency={Latency}smp)",
-            _isAudioUnit ? "AU" : "VST", loadIdentity,
+            _format == "au" ? "AU" : _format == "clap" ? "CLAP" : "VST", loadIdentity,
             Requirements.Channels, sampleRate, blockSize, _latencySamples);
         return Task.CompletedTask;
     }
@@ -264,12 +271,12 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
             if (_handle == 0)
             {
                 if (_stateStore is not null && _pluginId is not null)
-                    _stateStore.Save(_pluginId, _isAudioUnit ? "au" : "vst3", state);
+                    _stateStore.Save(_pluginId, _format, state);
                 return true;
             }
             if (_bridge.SetState(_handle, state) != VstBridgeStatus.Ok) return false;
             _lastStateHash = System.Security.Cryptography.SHA256.HashData(state);
-            _stateStore?.Save(_pluginId!, _isAudioUnit ? "au" : "vst3", state);
+            _stateStore?.Save(_pluginId!, _format, state);
             return true;
         }
     }
@@ -292,7 +299,7 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
         if (_lastStateHash is not null && hash.AsSpan().SequenceEqual(_lastStateHash)) return false;
         try
         {
-            _stateStore.Save(_pluginId, _isAudioUnit ? "au" : "vst3", state);
+            _stateStore.Save(_pluginId, _format, state);
             _lastStateHash = hash;
             return true;
         }

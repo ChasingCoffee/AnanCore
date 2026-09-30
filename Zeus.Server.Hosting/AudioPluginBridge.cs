@@ -53,6 +53,9 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
     // that never loads an AU pays nothing (and on non-macOS the AU dylib is
     // simply absent → AuBridgeNative degrades to passthrough).
     private IVstBridgeNative? _auBridge;
+    // Third backend: CLAP plug-ins (audio.format == "clap"), same native
+    // library as the VST3 host, created on first use.
+    private IVstBridgeNative? _clapBridge;
     private readonly Func<bool> _isMoxOn;
     private readonly Func<bool> _isMonitorOn;
     private readonly Func<bool> _isTciTxAudioActive;
@@ -1506,12 +1509,15 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
         // bridge keyed by vst3Path. The VST3 path is unchanged; AU is purely
         // additive (3-way dispatch).
         bool isAu = string.Equals(audio.Format, "au", StringComparison.OrdinalIgnoreCase);
+        bool isClap = string.Equals(audio.Format, "clap", StringComparison.OrdinalIgnoreCase);
         bool hasIdentity = isAu
             ? audio.AuComponentId is { Length: > 0 }
             : audio.Vst3Path is { Length: > 0 };
         if (!hasIdentity) return null;
 
-        var bridge = isAu ? (_auBridge ??= new AuBridgeNative()) : _vstBridge;
+        var bridge = isAu ? (_auBridge ??= new AuBridgeNative())
+            : isClap ? (_clapBridge ??= new ClapBridgeNative())
+            : _vstBridge;
         return new VstHostAudioPlugin(
             bridge: bridge,
             manifestAudio: audio,

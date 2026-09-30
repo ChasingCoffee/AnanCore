@@ -901,7 +901,7 @@ function PluginSidebar({
             type="button"
             onClick={onScanDefault}
             disabled={scanning}
-            title="Scan the standard Windows VST3 folders and register plugins for this audio suite"
+            title="Scan the standard VST3 and CLAP folders and register plugins for this audio suite"
             style={scanBtnStyle(scanning, true)}
           >
             {scanning ? 'Scanning...' : 'Scan VSTs'}
@@ -910,7 +910,7 @@ function PluginSidebar({
             type="button"
             onClick={onScanBothDefault}
             disabled={scanning}
-            title="Scan the standard Windows VST3 folders for both audio suites"
+            title="Scan the standard VST3 and CLAP folders for both audio suites"
             style={scanBtnStyle(scanning, false)}
           >
             Scan Both Suites
@@ -919,7 +919,7 @@ function PluginSidebar({
             type="button"
             onClick={onScanDirectory}
             disabled={scanning}
-            title="Scan a specific folder for VST3 plugins and add them to the rack"
+            title="Scan a specific folder for VST3 and CLAP plugins and add them to the rack"
             style={scanBtnStyle(scanning, false)}
           >
             + Add VST folder
@@ -1428,12 +1428,12 @@ export function AudioSuiteWindow({
   };
 
   // --- VST directory scan ------------------------------------------
-  // "Scan for VSTs" sweeps the standard VST3 folders for the server's OS in
-  // one click (reported by the server; Windows' Common Files\VST3 and
-  // C:\VST PLUGINS, macOS' /Library and ~/Library Audio/Plug-Ins/VST3, Linux'
-  // ~/.vst3 and /usr[/local]/lib/vst3). Whichever exist are scanned, the rest
-  // are skipped silently.
-  const defaultVst3Dirs = useAudioSuiteStore((s) => s.defaultVst3Dirs);
+  // "Scan for VSTs" sweeps the standard VST3 and CLAP folders for the
+  // server's OS in one click (reported by the server; e.g. Windows' Common
+  // Files\VST3 + \CLAP and C:\VST PLUGINS, macOS' /Library and ~/Library
+  // Audio/Plug-Ins/VST3 + /CLAP, Linux' ~/.vst3, ~/.clap and /usr/lib/...).
+  // Whichever exist are scanned, the rest are skipped silently.
+  const defaultPluginDirs = useAudioSuiteStore((s) => s.defaultPluginDirs);
   const [scanning, setScanning] = useState(false);
 
   // Scan one or more folders, aggregate the results, and report. Folders
@@ -1487,8 +1487,8 @@ export function AudioSuiteWindow({
   };
 
   // One-click sweep of the common VST3 locations.
-  const onScanDefaultVstDirectory = () => void runScan(defaultVst3Dirs, route);
-  const onScanBothDefaultVstDirectory = () => void runScan(defaultVst3Dirs, 'both');
+  const onScanDefaultVstDirectory = () => void runScan(defaultPluginDirs, route);
+  const onScanBothDefaultVstDirectory = () => void runScan(defaultPluginDirs, 'both');
   // Prompt for a specific folder, then scan just that one.
   const onScanVstDirectory = async () => {
     setScanFolderOpen(true);
@@ -2195,8 +2195,8 @@ export function AudioSuiteWindow({
         <TextInputDialog
           title="Scan VST folder"
           label="Folder path"
-          initialValue={defaultVst3Dirs[0] ?? ''}
-          placeholder={defaultVst3Dirs[0] ?? ''}
+          initialValue={defaultPluginDirs[0] ?? ''}
+          placeholder={defaultPluginDirs[0] ?? ''}
           confirmLabel="Scan Folder"
           onCancel={() => setScanFolderOpen(false)}
           onSubmit={(dir) => {
@@ -2204,7 +2204,7 @@ export function AudioSuiteWindow({
             void runScan([dir], route);
           }}
         >
-          <p>Register every VST3 plugin Zeus finds in this folder.</p>
+          <p>Register every VST3 and CLAP plugin Zeus finds in this folder.</p>
         </TextInputDialog>
       )}
     </div>

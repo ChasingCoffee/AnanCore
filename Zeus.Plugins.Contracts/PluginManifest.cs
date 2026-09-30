@@ -145,9 +145,11 @@ public sealed record AudioBlock
     /// Native host backend for this audio block. <c>"vst3"</c> (the default)
     /// loads via the in-process VST3 bridge from <see cref="Vst3Path"/>;
     /// <c>"au"</c> loads a macOS Audio Unit via the in-process AU bridge
-    /// using <see cref="AuComponentId"/>. Additive and back-compatible:
-    /// existing manifests omit this field and resolve to <c>"vst3"</c>, so
-    /// no on-disk manifest changes shape.
+    /// using <see cref="AuComponentId"/>; <c>"clap"</c> loads a CLAP plug-in
+    /// via the in-process CLAP host from <see cref="Vst3Path"/> (the .clap
+    /// file or bundle), with <see cref="Vst3Uid"/> holding its CLAP plug-in
+    /// id. Additive and back-compatible: existing manifests omit this field
+    /// and resolve to <c>"vst3"</c>, so no on-disk manifest changes shape.
     /// </summary>
     [JsonPropertyName("format")]
     public string Format { get; init; } = "vst3";
@@ -166,6 +168,7 @@ public sealed record AudioBlock
     /// <summary>
     /// Path to a VST3 file — relative to the plugin dir for a copied plugin,
     /// or absolute when the plugin is referenced in place (operator scan).
+    /// For <c>format == "clap"</c>, the .clap file or bundle.
     /// </summary>
     [JsonPropertyName("vst3Path")]
     public string? Vst3Path { get; init; }
@@ -174,7 +177,8 @@ public sealed record AudioBlock
     /// Engine plugin identifier (JUCE <c>createIdentifierString()</c>) selecting
     /// ONE sub-plugin from a file. Required for "shell" VST3s that expose many
     /// plugins from a single file (e.g. Waves WaveShell); null/empty means the
-    /// file contains a single plugin and the first one is loaded.
+    /// file contains a single plugin and the first one is loaded. For
+    /// <c>format == "clap"</c>, the CLAP plug-in id within the module.
     /// </summary>
     [JsonPropertyName("vst3Uid")]
     public string? Vst3Uid { get; init; }

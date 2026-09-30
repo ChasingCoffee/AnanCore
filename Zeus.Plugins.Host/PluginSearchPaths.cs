@@ -36,6 +36,35 @@ public static class PluginSearchPaths
             "/usr/local/lib/vst3");
     }
 
+    /// <summary>CLAP locations from the CLAP spec's "Plug-in location"
+    /// section (entry.h).</summary>
+    public static IReadOnlyList<string> DefaultClapDirectories()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (OperatingSystem.IsWindows())
+        {
+            var common = Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles);
+            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return Distinct(
+                Path.Combine(string.IsNullOrEmpty(common) ? @"C:\Program Files\Common Files" : common, "CLAP"),
+                string.IsNullOrEmpty(local) ? null : Path.Combine(local, "Programs", "Common", "CLAP"));
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            return Distinct(
+                "/Library/Audio/Plug-Ins/CLAP",
+                string.IsNullOrEmpty(home) ? null : Path.Combine(home, "Library", "Audio", "Plug-Ins", "CLAP"));
+        }
+        return Distinct(
+            string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".clap"),
+            "/usr/lib/clap");
+    }
+
+    /// <summary>Every standard plug-in folder the one-click scan sweeps:
+    /// VST3 then CLAP.</summary>
+    public static IReadOnlyList<string> DefaultPluginDirectories() =>
+        Distinct([.. DefaultVst3Directories(), .. DefaultClapDirectories()]);
+
     private static IReadOnlyList<string> Distinct(params string?[] paths) =>
         paths.Where(p => !string.IsNullOrEmpty(p))
              .Select(p => p!)
