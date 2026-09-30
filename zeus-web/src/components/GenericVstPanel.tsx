@@ -9,7 +9,6 @@
 // action plus the plugin's identity. Reorder / park / remove still work
 // from the rack slot chrome, and the VST processes audio regardless.
 
-import { useEffect, useRef } from 'react';
 import { useVstEditor, type VstEditorRoute } from './useVstEditor';
 import { useAudioSuiteStore } from '../state/audio-suite-store';
 
@@ -33,17 +32,9 @@ export function GenericVstPanel({ pluginId, name, route = 'tx' }: GenericVstPane
     enginePhase === 'staging' ||
     enginePhase === 'configuring';
 
-  // Selecting this VST's chip mounts the panel — auto-open its real
-  // editor window so the chip click alone pops the GUI (no extra button
-  // press). Fires once per mount; the server-side open is idempotent and
-  // the operator can still Close it below. Re-selecting the chip remounts
-  // and re-opens. A non-loadable .vst3 surfaces its error in the pane.
-  const autoOpenedRef = useRef(false);
-  useEffect(() => {
-    if (autoOpenedRef.current) return;
-    autoOpenedRef.current = true;
-    openEditor();
-  }, [openEditor]);
+  // The editor opens only when the operator asks (Open Editor below).
+  // Selecting a plugin — including the first one, selected automatically
+  // when the Suite opens — just shows this panel.
 
   return (
     <div
@@ -101,10 +92,10 @@ export function GenericVstPanel({ pluginId, name, route = 'tx' }: GenericVstPane
           {busy ? (starting ? 'Starting…' : '…') : open ? 'Close Editor' : 'Open Editor'}
         </button>
         <span style={{ color: 'var(--fg-3)', fontSize: 10, lineHeight: 1.3, flex: 1, minWidth: 160 }}>
-          Selecting this VST opens its real editor in a separate desktop
-          window — a VST3 GUI is a native window, not browser HTML, so it
-          can&rsquo;t render here. Use Close to dismiss it; the VST
-          processes audio either way.
+          Open Editor shows the plugin&rsquo;s own window on the desktop of
+          the computer running Zeus — a plugin GUI is a native window, not
+          browser HTML, so it can&rsquo;t render here. The plugin processes
+          audio whether its editor is open or not.
         </span>
       </div>
 

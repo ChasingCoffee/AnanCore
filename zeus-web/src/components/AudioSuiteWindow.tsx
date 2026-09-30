@@ -1274,10 +1274,6 @@ export function AudioSuiteWindow({
   const loadRxProcessingModeFromServer = useAudioSuiteStore(
     (s) => s.loadRxProcessingModeFromServer,
   );
-  const rxVstEngineAvailable = useAudioSuiteStore((s) => s.rxVstEngineAvailable);
-  const rxVstEngineActive = useAudioSuiteStore((s) => s.rxVstEngineActive);
-  const rxVstActivePlugins = useAudioSuiteStore((s) => s.rxVstActivePlugins);
-  const rxVstDegradedBlocks = useAudioSuiteStore((s) => s.rxVstDegradedBlocks);
   const loadChainOrderFromServer = useAudioSuiteStore(
     (s) => s.loadChainOrderFromServer,
   );
@@ -2088,49 +2084,6 @@ export function AudioSuiteWindow({
           </button>
         )}
       </div>
-
-      {isRxSuite && (
-        <div
-          style={{
-            display: 'flex',
-            gap: 6,
-            padding: '7px 12px',
-            background: 'var(--bg-1)',
-            borderBottom: '1px solid var(--line)',
-          }}
-        >
-          <span
-            title={
-              rxVstEngineActive
-                ? `VST engine active (${rxVstActivePlugins} plugin${rxVstActivePlugins === 1 ? '' : 's'}, ${rxVstDegradedBlocks} degraded blocks)`
-                : rxVstEngineAvailable
-                  ? 'VST engine idle'
-                  : 'VST engine not installed'
-            }
-            style={{
-              marginLeft: 'auto',
-              alignSelf: 'center',
-              padding: '3px 8px',
-              borderRadius: 4,
-              border: '1px solid var(--line)',
-              background: rxVstEngineActive ? 'var(--accent-soft)' : 'var(--bg-2)',
-              color: rxVstEngineActive
-                ? 'var(--fg-0)'
-                : rxVstEngineAvailable
-                  ? 'var(--fg-2)'
-                  : 'var(--power)',
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: 1,
-              textTransform: 'uppercase',
-              fontFamily: 'inherit',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            VST {rxVstEngineActive ? 'ON' : rxVstEngineAvailable ? 'IDLE' : 'OFF'}
-          </span>
-        </div>
-      )}
 
       {/* Profiles bar. TX uses the unified TX Audio Profile system (mirrored in
           the TX Fidelity panel, shared store); RX keeps its own chain-only
