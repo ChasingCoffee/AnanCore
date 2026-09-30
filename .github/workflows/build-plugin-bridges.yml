@@ -6,8 +6,8 @@ name: Build Plugin Bridges
 # Each leg uploads a `plugin-bridges-<rid>` artifact laid out as
 # Zeus.Plugins.Host/runtimes/<rid>/native/ — download and commit it, the same
 # way the WDSP binaries from build-native-libs.yml are refreshed. The job also
-# builds the in-tree test plug-in and loads it through the fresh bridge, so a
-# bridge that builds but cannot host fails here.
+# builds the in-tree test plug-in and runs the native ABI tests against it
+# (ctest), so a bridge that builds but cannot host fails here.
 
 on:
   push:
@@ -115,7 +115,7 @@ jobs:
         shell: bash
         run: |
           dest="staged/Zeus.Plugins.Host/runtimes/${{ matrix.rid }}/native"
-          want_vst="zvst_init zvst_load_vst3 zvst_process zvst_set_param zvst_unload zvst_shutdown zvst_describe zvst_editor_open zvst_editor_close zvst_editor_is_open zvst_get_latency_samples"
+          want_vst="zvst_init zvst_load_vst3 zvst_process zvst_set_param zvst_unload zvst_shutdown zvst_describe zvst_editor_open zvst_editor_close zvst_editor_is_open zvst_get_latency_samples zvst_load_vst3_class zvst_get_state zvst_set_state"
           case "${{ runner.os }}" in
             macOS)   syms=$(nm -gU "$dest/libzeus-vst-bridge.dylib"); aus=$(nm -gU "$dest/libzeus-au-bridge.dylib") ;;
             Linux)   syms=$(nm -D --defined-only "$dest/libzeus-vst-bridge.so") ;;
@@ -126,57 +126,19 @@ jobs:
             echo "$syms" | grep -q "$s" || { echo "MISSING $s"; missing=1; }
           done
           if [ "${{ runner.os }}" = macOS ]; then
-            echo "$aus" | grep -q zau_init || { echo "MISSING zau_init"; missing=1; }
+            for s in zau_init zau_get_state zau_set_state zau_get_latency_samples; do
+              echo "$aus" | grep -q "$s" || { echo "MISSING $s"; missing=1; }
+            done
             otool -l "$dest/libzeus-vst-bridge.dylib" | grep -A3 LC_BUILD_VERSION | grep minos
           fi
           exit $missing
 
-      - name: Load the test plug-in through the bridge
+      # Native ABI tests (native/zeus-vst-bridge/tests) against the test
+      # plug-in: load/process, class selection, state round-trip, 64-bit-only
+      # plug-ins, latency. Only where the runner can execute the build.
+      - name: Native bridge tests (ctest)
         if: matrix.can_run
-        shell: bash
-        run: |
-          cat > smoke.c <<'EOF'
-          #include <stdio.h>
-          #include <string.h>
-          #include "zvst.h"
-          int main(int argc, char** argv) {
-            if (zvst_init(ZVST_ABI) != ZVST_OK) { puts("init failed"); return 1; }
-            char json[4096]; int32_t len = 0;
-            int s = zvst_describe(argv[1], json, sizeof json, &len);
-            printf("describe=%d %s\n", s, json);
-            if (s != ZVST_OK || !strstr(json, "Zeus Test Invert")) return 2;
-            for (int ch = 1; ch <= 2; ch++) {
-              zvst_handle_t h = 0;
-              s = zvst_load_vst3(argv[1], ch, 48000, 256, &h);
-              printf("load(ch=%d)=%d\n", ch, s);
-              if (s != ZVST_OK) return 3;
-              float in[512], out[512];
-              for (int i = 0; i < 512; i++) in[i] = (float)(i % 256) / 256.0f - 0.5f;
-              s = zvst_process(h, in, out, 256);
-              if (s != ZVST_OK) { printf("process=%d\n", s); return 4; }
-              for (int i = 0; i < ch * 256; i++)
-                if (out[i] - in[i] > 1e-5f || in[i] - out[i] > 1e-5f) { printf("mismatch at %d\n", i); return 5; }
-              zvst_unload(h);
-            }
-            zvst_shutdown();
-            puts("ok");
-            return 0;
-          }
-          EOF
-          inc=native/zeus-vst-bridge/include
-          plugin=native/zeus-vst-bridge/build/test-plugin/ZeusTestPlugin.vst3
-          case "${{ runner.os }}" in
-            macOS)
-              clang smoke.c -I$inc -Lnative/zeus-vst-bridge/build -lzeus-vst-bridge \
-                -Wl,-rpath,$PWD/native/zeus-vst-bridge/build -o smoke && ./smoke "$plugin" ;;
-            Linux)
-              gcc smoke.c -I$inc -Lnative/zeus-vst-bridge/build -lzeus-vst-bridge \
-                -Wl,-rpath,$PWD/native/zeus-vst-bridge/build -o smoke && ./smoke "$plugin" ;;
-            Windows)
-              clang smoke.c -I$inc -Lnative/zeus-vst-bridge/build/Release -lzeus-vst-bridge -o smoke.exe
-              cp native/zeus-vst-bridge/build/Release/zeus-vst-bridge.dll .
-              ./smoke.exe "$plugin" ;;
-          esac
+        run: ctest --test-dir native/zeus-vst-bridge/build -C Release --output-on-failure
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

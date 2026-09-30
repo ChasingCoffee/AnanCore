@@ -104,6 +104,15 @@ jobs:
         run: |
           cmake -S native/zeus-vst-bridge -B native/zeus-vst-bridge/build -DCMAKE_BUILD_TYPE=Release -DZEUS_VST_REQUIRE_SDK=ON
           cmake --build native/zeus-vst-bridge/build --config Release --parallel
+          ctest --test-dir native/zeus-vst-bridge/build -C Release --output-on-failure
+
+      # macOS: the AU bridge too, so the AU state tests run against a fresh
+      # build rather than the committed dylib.
+      - name: Build AU bridge (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S native/zeus-au-bridge -B native/zeus-au-bridge/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native/zeus-au-bridge/build --parallel
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5

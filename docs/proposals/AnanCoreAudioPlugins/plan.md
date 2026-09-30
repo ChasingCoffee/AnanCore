@@ -1,6 +1,6 @@
 # ANAN Core Audio Plugins (VST3 / AU / CLAP) — Working Plan
 
-**Status:** Draft working plan — Phase 1 not started
+**Status:** Phase 1 done (PR #1); Phase 2 done (PR #2); Phase 3 next — see the status notes under each phase
 **Date:** 2026-09-30
 **Branching:** `feature/<name>` off `freedv-in-core` in the ChasingCoffee fork; contributed upstream to Apache Labs once each phase is proven.
 **Companion doc:** [`ANAN_Core_Native_VST3_Host_Plan.md`](ANAN_Core_Native_VST3_Host_Plan.md) (the original proposal). This plan supersedes its framework/architecture choice (Sections 8–9, 19) because discovery found a partial in-process host already in the tree; its safety rules, TX invariants, and non-goals (Sections 4, 13, 15–16, 26, 35) still apply.
@@ -179,6 +179,8 @@ Each phase ends with a PR into `freedv-in-core` in the fork, green on macOS/Wind
 
 **Red-light for upstream:** new submodule dependency (vst3sdk), CI matrix change.
 
+**Status — done.** vst3sdk pinned at `v3.8.1_build_84`; stub build; `build-plugin-bridges.yml` (6 VST3 RIDs + AU macOS, export check, test-plug-in load) and `build-test.yml` build the bridge first; CI-built binaries committed for every RID. Discovery during the phase, fixed in the bridge: sidechain plug-ins (FabFilter Pro-Q/Pro-C, most dynamics) never loaded because `setBusArrangements` named only the main bus; `setActive` was called before `initialize` and crashed u-he plug-ins; the committed AU dylib required macOS 26. Item 6 (PE-heuristic rejecting macOS bundles) needed no change: with the bridge present, non-PE bundles go through `describe`. A sweep of 392 installed macOS VST3s loads every audio effect; instruments are refused; one plug-in (MPC 3) hangs in load — Phase 2's probing.
+
 ### Phase 2 — Make the host solid (VST3 + AU)
 
 **Scope**
@@ -195,6 +197,14 @@ Each phase ends with a PR into `freedv-in-core` in the fork, green on macOS/Wind
 **Acceptance:** VST3 + AU editors open on macOS/Windows/Linux(X11); plugin settings survive restart; a deliberately crashing test plugin fails its scan without affecting the server; per-plugin bypass is transparent.
 
 **Red-light for upstream:** ABI changes (internal, but new persistence collection), TX default-bypassed policy.
+
+**Status — done, with these decisions:**
+- **Bypass is host-side** for every format: the chain skips the slot (bit-identical pass-through) and the plugin stays loaded in position. Uniform across VST3/AU/CLAP; a plug-in's own `kIsBypass` is not driven. Persisted per plugin id (`audio_plugin_bypass`), toggled from a Power button on each chain chip (UX addition — flag for review).
+- **State** lives in `zeus-prefs.db` (`audio_plugin_state`, keyed by plugin id), restored right after each native load. Saved when it changes: on editor close (from the UI or the window's own close button), on unload/shutdown, and every 2 s while an editor is open. TX and RX **profiles** now carry each hosted plugin's state (the previously unused `VstPluginStates` / RX `PluginStates`), so applying a profile restores plugin settings too.
+- **Crash-safe probing** runs the host binary as `OpenhpsdrZeus --plugin-probe …`: VST3 scanning describes each module in a child process (4 in parallel), and a plugin is trial-loaded in a child process before its first in-process load. Crashes, hangs (20–30 s limit, process killed) and refusals are cached per plugin version (`<plugin-root>/.probe-cache.json`). Without a probe host (e.g. a test runner) behaviour falls back to in-process.
+- **Multi-class modules** register one plugin per effect class, pinned by class UID; instrument classes are skipped.
+- **Not done: "new TX inserts start bypassed."** Scanned plugins already arrive parked, so adding one to the chain is the deliberate act; a second gate would only confuse.
+- ABI: zvst v4, zau v3. Native ctest suite (`native/zeus-vst-bridge/tests`) runs in CI.
 
 ### Phase 3 — CLAP
 
