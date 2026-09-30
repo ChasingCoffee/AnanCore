@@ -77,6 +77,12 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
     // change every few seconds so a crash or power cut loses little.
     private const int StateAutosaveIntervalMs = 2000;
     private System.Threading.Timer? _stateAutosaveTimer;
+    // Once a second, name any plugin whose slowest block took more than this
+    // share of the block's own length: the audio behind a plugin that slow
+    // is at risk of dropping out. Diagnostics only.
+    private const int SlowPluginReportIntervalMs = 1000;
+    internal const double SlowPluginBudgetShare = 0.5;
+    private System.Threading.Timer? _slowPluginTimer;
     // Per-plugin bypass: the plugin stays loaded and slotted but its slot is
     // skipped (bit-identical pass-through). Keyed by id so it survives every
     // re-slot; guarded by _lock.
@@ -498,6 +504,9 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
             _stateAutosaveTimer = new System.Threading.Timer(
                 _ => AutosaveOpenEditors(), null, StateAutosaveIntervalMs, StateAutosaveIntervalMs);
 
+        _slowPluginTimer = new System.Threading.Timer(
+            _ => ReportSlowPlugins(), null, SlowPluginReportIntervalMs, SlowPluginReportIntervalMs);
+
         _log.LogInformation("AudioPluginBridge online.");
         return Task.CompletedTask;
     }
@@ -616,6 +625,8 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
     {
         _livenessTimer?.Dispose();
         _livenessTimer = null;
+        _slowPluginTimer?.Dispose();
+        _slowPluginTimer = null;
 
         if (_stateAutosaveTimer is not null)
         {
@@ -810,6 +821,33 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
     /// realtime path — reads only the volatile meter fields and the controller's
     /// diagnostic counters. Behaviour-neutral: logs only. See zeus-umt6.
     /// </summary>
+    private void ReportSlowPlugins()
+    {
+        try
+        {
+            ReportSlowPlugins("TX", _chain);
+            ReportSlowPlugins("RX", _rxChain);
+        }
+        catch (Exception ex)
+        {
+            _log.LogDebug(ex, "Slow-plugin report failed.");
+        }
+    }
+
+    private void ReportSlowPlugins(string route, AudioChain chain)
+    {
+        foreach (var peak in SlowPlugins(chain))
+        {
+            _log.LogWarning(
+                "{Route} plugin '{Name}' took {PeakMs:F1} ms for a {BlockMs:F1} ms block (slot {Slot}); audio behind it may drop out.",
+                route, peak.Plugin.DisplayName, peak.PeakMicros / 1000.0, peak.BlockMicros / 1000.0, peak.Slot + 1);
+        }
+    }
+
+    /// <summary>Slots whose slowest block since the last call exceeded the budget share.</summary>
+    internal static IEnumerable<AudioChain.SlotPeak> SlowPlugins(AudioChain chain) =>
+        chain.TakeSlotPeaks().Where(p => p.BlockMicros > 0 && p.PeakMicros > p.BlockMicros * SlowPluginBudgetShare);
+
     private void LivenessTick()
     {
         try

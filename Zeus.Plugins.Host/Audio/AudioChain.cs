@@ -49,6 +49,13 @@ public sealed class AudioChain : IAsyncDisposable
     private long _blocksProcessed;  // blocks that actually ran the chain (not bypassed)
     private long _nonFiniteRepairs; // total NaN/Inf samples a plugin emitted and the chain zeroed
 
+    // Per-slot slowest block since the last TakeSlotPeaks (Stopwatch ticks),
+    // and the real-time length of the latest block — the budget a plugin is
+    // judged against. Audio thread writes; the control thread reads and
+    // resets once a second, so a plugin that stalls the audio can be named.
+    private readonly long[] _slotPeakTicks = new long[MaxSlots];
+    private long _blockTicks;
+
     public AudioChain(int maxFrames = 4096, int maxChannels = 2)
     {
         _scratch = new float[maxFrames * maxChannels];
@@ -95,6 +102,29 @@ public sealed class AudioChain : IAsyncDisposable
         TicksToMicros(Volatile.Read(ref _procTicksMax)),
         Volatile.Read(ref _blocksProcessed),
         Volatile.Read(ref _nonFiniteRepairs));
+
+    /// <summary>One slot's slowest block in a reporting window.</summary>
+    /// <param name="PeakMicros">How long the plugin took for its slowest block.</param>
+    /// <param name="BlockMicros">How much audio a block holds: the time a
+    /// plugin has before the audio behind it starts to starve.</param>
+    public readonly record struct SlotPeak(int Slot, IAudioPlugin Plugin, double PeakMicros, double BlockMicros);
+
+    /// <summary>
+    /// Control thread: each loaded slot's slowest block since the previous
+    /// call (slots that ran no block are left out), then starts a new window.
+    /// </summary>
+    public IReadOnlyList<SlotPeak> TakeSlotPeaks()
+    {
+        var blockMicros = TicksToMicros(Volatile.Read(ref _blockTicks));
+        List<SlotPeak>? peaks = null;
+        for (int i = 0; i < MaxSlots; i++)
+        {
+            var ticks = Interlocked.Exchange(ref _slotPeakTicks[i], 0);
+            if (ticks == 0 || _slots[i].Plugin is not { } plugin) continue;
+            (peaks ??= []).Add(new SlotPeak(i, plugin, TicksToMicros(ticks), blockMicros));
+        }
+        return peaks ?? (IReadOnlyList<SlotPeak>)[];
+    }
 
     private static double TicksToMicros(long ticks) =>
         ticks * (1_000_000.0 / System.Diagnostics.Stopwatch.Frequency);
@@ -251,6 +281,9 @@ public sealed class AudioChain : IAsyncDisposable
         // and disallowed in tuples).
         bool currentIsOutput = true;
         int nonFinite = 0;
+        if (ctx.SampleRate > 0)
+            Volatile.Write(ref _blockTicks,
+                (long)ctx.Frames * System.Diagnostics.Stopwatch.Frequency / ctx.SampleRate);
 
         for (int i = 0; i < MaxSlots; i++)
         {
@@ -258,6 +291,7 @@ public sealed class AudioChain : IAsyncDisposable
             var plugin = slot.Plugin;
             if (plugin is null || slot.Bypassed) continue;
 
+            long slotStart = System.Diagnostics.Stopwatch.GetTimestamp();
             if (currentIsOutput)
             {
                 var next = scratch[..needed];
@@ -270,6 +304,9 @@ public sealed class AudioChain : IAsyncDisposable
                 plugin.Process(scratch[..needed], next, ctx);
                 nonFinite += RepairNonFiniteSamples(next);
             }
+
+            long slotTicks = System.Diagnostics.Stopwatch.GetTimestamp() - slotStart;
+            if (slotTicks > Volatile.Read(ref _slotPeakTicks[i])) Volatile.Write(ref _slotPeakTicks[i], slotTicks);
 
             currentIsOutput = !currentIsOutput;
         }
