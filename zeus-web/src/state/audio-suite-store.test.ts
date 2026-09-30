@@ -849,6 +849,40 @@ describe('audio-suite-store platform affordance', () => {
     expect(useAudioSuiteStore.getState().auSupported).toBe(false);
   });
 
+  it('loads bypassed plugin ids and toggles one on the right suite', async () => {
+    const calls: Array<{ url: string; body?: string }> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, body: typeof init?.body === 'string' ? init.body : undefined });
+      if (url === '/api/tx-audio-suite/plugins/bypass') return response({ pluginIds: ['a'] });
+      if (url === '/api/rx-audio-suite/plugins/b/bypass') return response({ pluginIds: ['a', 'b'] });
+      return response({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAudioSuiteStore.getState().loadPluginBypassFromServer();
+    expect(useAudioSuiteStore.getState().bypassedPluginIds).toEqual(['a']);
+
+    await useAudioSuiteStore.getState().setPluginBypassed('rx', 'b', true);
+    expect(useAudioSuiteStore.getState().bypassedPluginIds).toEqual(['a', 'b']);
+    expect(calls.at(-1)).toEqual({
+      url: '/api/rx-audio-suite/plugins/b/bypass',
+      body: JSON.stringify({ bypassed: true }),
+    });
+  });
+
+  it('rolls a bypass toggle back when the server refuses it', async () => {
+    useAudioSuiteStore.setState({ bypassedPluginIds: [] });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(async () => new Response('nope', { status: 404 })),
+    );
+
+    await useAudioSuiteStore.getState().setPluginBypassed('tx', 'x', true);
+
+    expect(useAudioSuiteStore.getState().bypassedPluginIds).toEqual([]);
+  });
+
   it('takes the default VST3 scan folders from the server', async () => {
     const dirs = ['/Library/Audio/Plug-Ins/VST3', '/Users/op/Library/Audio/Plug-Ins/VST3'];
     const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {

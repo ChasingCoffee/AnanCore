@@ -74,6 +74,34 @@ public interface IVstBridgeNative
     /// <c>zvst_get_latency_samples</c> (ABI v3).
     /// </summary>
     int GetLatencySamples(nint handle) => 0;
+
+    /// <summary>
+    /// Load one specific audio-effect class from a multi-class module ("shell")
+    /// by its UID — the <c>uid</c> <see cref="Describe"/> reports. A null or
+    /// empty <paramref name="classUid"/> loads the first effect class, exactly
+    /// like <see cref="LoadVst3"/>. ABI v4 (<c>zvst_load_vst3_class</c>); a
+    /// backend without class selection falls back to <see cref="LoadVst3"/>.
+    /// </summary>
+    int LoadVst3Class(string path, string? classUid, int channels, int sampleRate, int blockSize, out nint handle) =>
+        LoadVst3(path, channels, sampleRate, blockSize, out handle);
+
+    /// <summary>
+    /// Serialise the loaded plugin's complete state (an opaque blob only
+    /// <see cref="SetState"/> understands). Control thread only.
+    /// <see cref="VstBridgeStatus.NotImplemented"/> when the backend has no
+    /// state support. ABI v4 (<c>zvst_get_state</c>) / AU ABI v3.
+    /// </summary>
+    int GetState(nint handle, out byte[] state)
+    {
+        state = [];
+        return VstBridgeStatus.NotImplemented;
+    }
+
+    /// <summary>
+    /// Restore a blob from <see cref="GetState"/>. Blocks processed while it
+    /// applies pass through unprocessed. Control thread only.
+    /// </summary>
+    int SetState(nint handle, ReadOnlySpan<byte> state) => VstBridgeStatus.NotImplemented;
 }
 
 /// <summary>
@@ -99,7 +127,8 @@ public static class VstBridgeStatus
     public const int InvalidHandle       = 6;
     public const int InvalidArguments    = 7;
     public const int NotImplemented      = 8;
-    public const int UnsupportedPrecision = 9;  // plugin refuses 32-bit float
+    public const int UnsupportedPrecision = 9;  // plugin processes neither 32- nor 64-bit samples
+    public const int BufferTooSmall      = 10; // GetState: caller buffer too small (handled internally)
     public const int Other               = 255;
 }
 
@@ -114,5 +143,7 @@ public static class VstBridgeAbi
     // v3: added zvst_get_latency_samples + the ZVST_UNSUPPORTED_PRECISION
     //     status, and host/plugin channel-count bridging inside zvst_process
     //     (no existing signature changed).
-    public const int Current = 3;
+    // v4: added zvst_load_vst3_class, zvst_get_state / zvst_set_state and the
+    //     ZVST_BUFFER_TOO_SMALL status; macOS editors; 64-bit-only plug-ins.
+    public const int Current = 4;
 }

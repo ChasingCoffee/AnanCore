@@ -125,4 +125,64 @@ public class VstBridgeTestPluginTests
         }
         finally { bridge.Shutdown(); }
     }
+
+    [SkippableFact]
+    public void LoadVst3Class_PicksTheNamedClass()
+    {
+        Xunit.Skip.If(Skip, SkipReason);
+        var bridge = Bridge();
+        try
+        {
+            const int frames = 128;
+            Assert.Equal(VstBridgeStatus.Ok,
+                bridge.LoadVst3Class(TestPlugin!, InvertUid, 1, 48000, frames, out var handle));
+            try
+            {
+                var input = Ramp(1, frames);
+                var output = new float[frames];
+                Assert.Equal(VstBridgeStatus.Ok, bridge.Process(handle, input, output, frames));
+                for (int i = 0; i < frames; i++) Assert.Equal(-input[i], output[i], 5);
+            }
+            finally { bridge.Unload(handle); }
+
+            Assert.Equal(VstBridgeStatus.NoAudioEffectClass,
+                bridge.LoadVst3Class(TestPlugin!, "00000000000000000000000000000000", 1, 48000, frames, out _));
+        }
+        finally { bridge.Shutdown(); }
+    }
+
+    [SkippableFact]
+    public void State_RoundTripsIntoAFreshInstance()
+    {
+        Xunit.Skip.If(Skip, SkipReason);
+        var bridge = Bridge();
+        try
+        {
+            const int frames = 128;
+            Assert.Equal(VstBridgeStatus.Ok, bridge.LoadVst3(TestPlugin!, 1, 48000, frames, out var a));
+            byte[] saved;
+            try
+            {
+                bridge.SetParameter(a, 0, 0.75); // gain x1.5, applied by the next block
+                var scratch = new float[frames];
+                bridge.Process(a, Ramp(1, frames), scratch, frames);
+                Assert.Equal(VstBridgeStatus.Ok, bridge.GetState(a, out saved));
+                Assert.True(saved.Length > 12);
+            }
+            finally { bridge.Unload(a); }
+
+            Assert.Equal(VstBridgeStatus.Ok, bridge.LoadVst3(TestPlugin!, 1, 48000, frames, out var b));
+            try
+            {
+                Assert.Equal(VstBridgeStatus.Ok, bridge.SetState(b, saved));
+                var input = Ramp(1, frames);
+                var output = new float[frames];
+                Assert.Equal(VstBridgeStatus.Ok, bridge.Process(b, input, output, frames));
+                for (int i = 0; i < frames; i++) Assert.Equal(1.5f * input[i], output[i], 5);
+                Assert.Equal(VstBridgeStatus.InvalidArguments, bridge.SetState(b, new byte[] { 1, 2, 3 }));
+            }
+            finally { bridge.Unload(b); }
+        }
+        finally { bridge.Shutdown(); }
+    }
 }

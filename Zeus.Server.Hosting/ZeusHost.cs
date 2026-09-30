@@ -1030,6 +1030,7 @@ public static class ZeusHost
         // into WdspDspEngine's realtime TX seam. No-op when no plugins
         // declare an audio component; subscribes to engine swaps so it
         // survives a Synthetic→WDSP transition mid-session.
+        builder.Services.AddSingleton<AudioPluginStateStore>();
         builder.Services.AddSingleton<AudioPluginBridge>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<AudioPluginBridge>());
 

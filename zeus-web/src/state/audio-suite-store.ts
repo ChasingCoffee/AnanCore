@@ -265,6 +265,12 @@ interface AudioSuiteState {
   loadPreviewState(): Promise<void>;
   setPreviewEnabled(enabled: boolean, meterOnly?: boolean): Promise<void>;
 
+  // Per-plugin bypass: a bypassed plugin stays loaded and in its chain slot
+  // but passes audio through. Server-authoritative, shared by both suites.
+  bypassedPluginIds: string[];
+  loadPluginBypassFromServer(): Promise<void>;
+  setPluginBypassed(route: AudioSuiteRoute, pluginId: string, bypassed: boolean): Promise<void>;
+
   // Master bypass plumbing.
   setMasterBypassedFromServer(bypassed: boolean): void;
   setRxMasterBypassedFromServer(bypassed: boolean): void;
@@ -428,6 +434,7 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
       // value (if any) and any WS broadcast keeps it in sync after.
       masterBypassed: true,
       rxMasterBypassed: true,
+      bypassedPluginIds: [],
       processingMode: 'native',
       vstEngineAvailable: false,
       vstEngineActive: false,
@@ -629,6 +636,54 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
           set({ chainOrder: prev });
 
           console.warn('audio-suite chain-membership PUT threw', err);
+        }
+      },
+
+      loadPluginBypassFromServer: async () => {
+        try {
+          const res = await fetch('/api/tx-audio-suite/plugins/bypass');
+          if (!res.ok) return;
+          const body = (await res.json()) as { pluginIds?: unknown };
+          if (Array.isArray(body.pluginIds)) {
+            set({
+              bypassedPluginIds: body.pluginIds.filter((id): id is string => typeof id === 'string'),
+            });
+          }
+        } catch (err) {
+          console.warn('audio-suite plugin bypass GET threw', err);
+        }
+      },
+
+      setPluginBypassed: async (route, pluginId, bypassed) => {
+        const prev = get().bypassedPluginIds;
+        set({
+          bypassedPluginIds: bypassed
+            ? [...prev.filter((id) => id !== pluginId), pluginId]
+            : prev.filter((id) => id !== pluginId),
+        });
+        try {
+          const res = await fetch(
+            `/api/${route}-audio-suite/plugins/${encodeURIComponent(pluginId)}/bypass`,
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ bypassed }),
+            },
+          );
+          if (!res.ok) {
+            set({ bypassedPluginIds: prev });
+            console.warn(`audio-suite plugin bypass PUT rejected: ${res.status} ${res.statusText}`);
+            return;
+          }
+          const body = (await res.json()) as { pluginIds?: unknown };
+          if (Array.isArray(body.pluginIds)) {
+            set({
+              bypassedPluginIds: body.pluginIds.filter((id): id is string => typeof id === 'string'),
+            });
+          }
+        } catch (err) {
+          set({ bypassedPluginIds: prev });
+          console.warn('audio-suite plugin bypass PUT threw', err);
         }
       },
 
