@@ -131,6 +131,42 @@ public class VstHostAudioPluginStateTests : IDisposable
         Assert.False(bridge.Loaded);
     }
 
+    [SkippableFact]
+    public async Task OpenEditor_OnAPluginLoadedBeforeTheUiLoop_ReloadsItWithItsSettings()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "the reload applies to macOS editors only");
+        var bridge = new StatefulBridge { State = [7, 7, 7] };
+        bridge.EditorRefused.Add(0x1234); // the instance restored at startup
+        var plugin = Plugin(bridge, new MemoryStateStore());
+        await plugin.InitializeAudioAsync(new Host(), default);
+
+        Assert.True(plugin.OpenEditor());
+
+        Assert.Equal(2, bridge.LoadCount);
+        Assert.Equal(new nint[] { 0x1234 }, bridge.Unloaded);  // the old instance went
+        Assert.Contains((nint)0x1235, bridge.SetStateOn);       // the new one got its settings
+        Assert.Equal(new byte[] { 7, 7, 7 }, bridge.State);
+
+        var input = new float[] { 0.5f, -0.5f };
+        var output = new float[2];
+        plugin.Process(input, output, new AudioBlockContext(48000, 1, 2, 0, false));
+        Assert.Equal(input, output); // audio runs through the new instance
+    }
+
+    [SkippableFact]
+    public async Task OpenEditor_ReloadsAtMostOnce()
+    {
+        Skip.IfNot(OperatingSystem.IsMacOS(), "the reload applies to macOS editors only");
+        var bridge = new StatefulBridge();
+        bridge.EditorRefused.UnionWith([(nint)0x1234, 0x1235, 0x1236]); // never supported
+        var plugin = Plugin(bridge, null);
+        await plugin.InitializeAudioAsync(new Host(), default);
+
+        Assert.False(plugin.OpenEditor());
+        Assert.False(plugin.OpenEditor());
+        Assert.Equal(2, bridge.LoadCount);
+    }
+
     private sealed class DenyGuard : IPluginLoadGuard
     {
         public (bool Allowed, string? Reason) Check(string format, string identity, string? classUid) =>
@@ -152,33 +188,48 @@ public class VstHostAudioPluginStateTests : IDisposable
         public bool PlainLoad;
         public string? LastClassUid;
         public int UnloadCount;
+        public int LoadCount;
+        public nint NextHandle = 0x1234;
+        public readonly List<nint> Unloaded = [];
+        public readonly List<nint> SetStateOn = [];
+        // Handles whose editor the bridge refuses as "not implemented" (a
+        // macOS plugin loaded before the UI loop ran).
+        public readonly HashSet<nint> EditorRefused = [];
 
         public int Init(int abi) => VstBridgeStatus.Ok;
         public int LoadVst3(string path, int channels, int sampleRate, int blockSize, out nint handle)
         {
             PlainLoad = true;
             Loaded = true;
-            handle = 0x1234;
+            LoadCount++;
+            handle = NextHandle++;
             return VstBridgeStatus.Ok;
         }
         public int LoadVst3Class(string path, string? classUid, int channels, int sampleRate, int blockSize, out nint handle)
         {
             LastClassUid = classUid;
             Loaded = true;
-            handle = 0x1234;
+            LoadCount++;
+            handle = NextHandle++;
             return VstBridgeStatus.Ok;
         }
         public int GetState(nint handle, out byte[] state) { state = State.ToArray(); return VstBridgeStatus.Ok; }
-        public int SetState(nint handle, ReadOnlySpan<byte> state) { State = state.ToArray(); return VstBridgeStatus.Ok; }
+        public int SetState(nint handle, ReadOnlySpan<byte> state)
+        {
+            SetStateOn.Add(handle);
+            State = state.ToArray();
+            return VstBridgeStatus.Ok;
+        }
         public int Process(nint handle, ReadOnlySpan<float> input, Span<float> output, int frames)
         {
             input.CopyTo(output);
             return VstBridgeStatus.Ok;
         }
         public int SetParameter(nint handle, uint paramId, double normalized) => VstBridgeStatus.Ok;
-        public int Unload(nint handle) { UnloadCount++; Loaded = false; return VstBridgeStatus.Ok; }
+        public int Unload(nint handle) { UnloadCount++; Unloaded.Add(handle); Loaded = false; return VstBridgeStatus.Ok; }
         public int Shutdown() => VstBridgeStatus.Ok;
-        public int EditorOpen(nint handle, string title) => VstBridgeStatus.Ok;
+        public int EditorOpen(nint handle, string title) =>
+            EditorRefused.Contains(handle) ? VstBridgeStatus.NotImplemented : VstBridgeStatus.Ok;
         public int EditorClose(nint handle) => VstBridgeStatus.Ok;
         public bool EditorIsOpen(nint handle) => false;
     }

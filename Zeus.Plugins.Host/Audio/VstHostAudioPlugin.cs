@@ -31,6 +31,15 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
     private readonly object _ctl = new();
     private nint _handle;
     private int _latencySamples;
+    // How the plugin was loaded, kept so it can be loaded again (see
+    // ReloadForEditorLocked). Set once InitializeAudioAsync has loaded it.
+    private string? _loadedIdentity;
+    private int _loadedSampleRate;
+    private int _loadedBlockSize;
+    // Blocks in flight on the audio thread. A reload swaps _handle and waits
+    // for this to drain before unloading the old instance.
+    private int _inProcess;
+    private bool _reloadedForEditor;
     // SHA-256 of the last state blob saved or restored, so unchanged state is
     // never rewritten.
     private byte[]? _lastStateHash;
@@ -205,6 +214,9 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
         lock (_ctl)
         {
             _handle = handle;
+            _loadedIdentity = loadIdentity;
+            _loadedSampleRate = sampleRate;
+            _loadedBlockSize = blockSize;
             RestoreSavedStateLocked();
         }
 
@@ -312,19 +324,30 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
 
     public void Process(ReadOnlySpan<float> input, Span<float> output, AudioBlockContext ctx)
     {
-        if (_handle == 0)
+        // Counted so a reload can tell when no block still holds the old
+        // handle. Increment before reading the handle.
+        Interlocked.Increment(ref _inProcess);
+        try
         {
-            input.CopyTo(output); // safety: pass through if not initialised
-            return;
-        }
+            var handle = Volatile.Read(ref _handle);
+            if (handle == 0)
+            {
+                input.CopyTo(output); // safety: pass through if not initialised
+                return;
+            }
 
-        var status = _bridge.Process(_handle, input, output, ctx.Frames);
-        if (status != VstBridgeStatus.Ok)
+            var status = _bridge.Process(handle, input, output, ctx.Frames);
+            if (status != VstBridgeStatus.Ok)
+            {
+                // Realtime path: NEVER throw, NEVER log here (allocation).
+                // Pass through on bridge failure — the operator will see a
+                // status surface up via the next non-realtime poll.
+                input.CopyTo(output);
+            }
+        }
+        finally
         {
-            // Realtime path: NEVER throw, NEVER log here (allocation).
-            // Pass through on bridge failure — the operator will see a
-            // status surface up via the next non-realtime poll.
-            input.CopyTo(output);
+            Interlocked.Decrement(ref _inProcess);
         }
     }
 
@@ -360,10 +383,50 @@ public sealed class VstHostAudioPlugin : IAudioPlugin, IAsyncDisposable
                 return false;
             }
             var status = _bridge.EditorOpen(_handle, DisplayName);
+            // macOS: an editor runs on the thread the plugin was loaded on, and
+            // only a plugin loaded while the app's UI loop was running gets the
+            // main thread. One restored at startup, before that loop started,
+            // is refused. Load it again now that the loop runs, then retry.
+            if (status == VstBridgeStatus.NotImplemented && OperatingSystem.IsMacOS()
+                && _format != "au" && !_reloadedForEditor && ReloadForEditorLocked())
+                status = _bridge.EditorOpen(_handle, DisplayName);
             if (status != VstBridgeStatus.Ok)
                 _log?.LogWarning("VST '{Name}' editor open failed (status={Status}).", DisplayName, status);
             return status == VstBridgeStatus.Ok;
         }
+    }
+
+    /// <summary>
+    /// Load a second instance the same way, carry the current settings over,
+    /// swap it in and unload the first. The audio thread keeps using whichever
+    /// handle it read; the old one is unloaded only once no block holds it.
+    /// Caller holds _ctl. False (and nothing changed) when the reload fails.
+    /// </summary>
+    private bool ReloadForEditorLocked()
+    {
+        _reloadedForEditor = true; // once per instance, success or not
+        if (_loadedIdentity is null || _handle == 0) return false;
+
+        byte[]? state = _bridge.GetState(_handle, out var s) == VstBridgeStatus.Ok ? s : null;
+        nint fresh;
+        var status = _classUid is not null && !_isAudioUnit
+            ? _bridge.LoadVst3Class(_loadedIdentity, _classUid, Requirements.Channels, _loadedSampleRate, _loadedBlockSize, out fresh)
+            : _bridge.LoadVst3(_loadedIdentity, Requirements.Channels, _loadedSampleRate, _loadedBlockSize, out fresh);
+        if (status != VstBridgeStatus.Ok || fresh == 0)
+        {
+            _log?.LogWarning("Reloading '{Name}' to open its editor failed (status={Status}).", DisplayName, status);
+            return false;
+        }
+        if (state is { Length: > 0 } && _bridge.SetState(fresh, state) != VstBridgeStatus.Ok)
+            _log?.LogWarning("'{Name}' did not take its settings back after reloading.", DisplayName);
+
+        var old = Interlocked.Exchange(ref _handle, fresh);
+        var drained = SpinWait.SpinUntil(() => Volatile.Read(ref _inProcess) == 0, TimeSpan.FromSeconds(2));
+        if (drained) _bridge.Unload(old);
+        else _log?.LogWarning("'{Name}': the audio thread still held the old instance; leaving it loaded.", DisplayName);
+        _latencySamples = _bridge.GetLatencySamples(fresh);
+        _log?.LogInformation("Reloaded '{Name}' on the UI thread so its editor can open.", DisplayName);
+        return true;
     }
 
     /// <summary>Close the plugin's native editor window if open, keeping
