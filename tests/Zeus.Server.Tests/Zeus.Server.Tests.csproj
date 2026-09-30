@@ -63,6 +63,8 @@
       <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\libzeus-vst-bridge.so" />
       <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\Release\zeus-vst-bridge.dll" />
       <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-au-bridge\build\libzeus-au-bridge.dylib" />
+      <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\zeus-plugin-probe" />
+      <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\Release\zeus-plugin-probe.exe" />
     </ItemGroup>
     <Copy SourceFiles="@(FreshBridge)" DestinationFolder="$(ZeusNativeRidDir)" Condition="Exists('%(FreshBridge.FullPath)')" SkipUnchangedFiles="true" />
   </Target>

@@ -104,11 +104,12 @@ jobs:
           case "${{ runner.os }}" in
             macOS)
               cp native/zeus-vst-bridge/build/libzeus-vst-bridge.dylib "staged/$dest/"
+              cp native/zeus-vst-bridge/build/zeus-plugin-probe "staged/$dest/"
               cp native/zeus-au-bridge/build/libzeus-au-bridge.dylib "staged/$dest/" ;;
             Linux)
-              cp native/zeus-vst-bridge/build/libzeus-vst-bridge.so "staged/$dest/" ;;
+              cp native/zeus-vst-bridge/build/libzeus-vst-bridge.so native/zeus-vst-bridge/build/zeus-plugin-probe "staged/$dest/" ;;
             Windows)
-              cp native/zeus-vst-bridge/build/Release/zeus-vst-bridge.dll "staged/$dest/" ;;
+              cp native/zeus-vst-bridge/build/Release/zeus-vst-bridge.dll native/zeus-vst-bridge/build/Release/zeus-plugin-probe.exe "staged/$dest/" ;;
           esac
           ls -la "staged/$dest"
 

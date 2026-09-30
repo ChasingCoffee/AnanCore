@@ -32,3 +32,6 @@ if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {
 New-Item -ItemType Directory -Force -Path $stagedDir | Out-Null
 Copy-Item -LiteralPath $builtDll -Destination (Join-Path $stagedDir "zeus-vst-bridge.dll") -Force
 Get-Item -LiteralPath (Join-Path $stagedDir "zeus-vst-bridge.dll") | Select-Object FullName, Length
+$builtProbe = Join-Path $buildDir "$Configuration\zeus-plugin-probe.exe"
+Copy-Item -LiteralPath $builtProbe -Destination (Join-Path $stagedDir "zeus-plugin-probe.exe") -Force
+Get-Item -LiteralPath (Join-Path $stagedDir "zeus-plugin-probe.exe") | Select-Object FullName, Length

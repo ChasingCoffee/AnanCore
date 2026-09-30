@@ -61,6 +61,7 @@ case "$(uname -s)" in
             build "$au_root" "$au_root/build-$rid" -DCMAKE_OSX_ARCHITECTURES="$osx_arch"
             cp -f "$vst_root/build-$rid/libzeus-vst-bridge.dylib" "$dest/"
             cp -f "$au_root/build-$rid/libzeus-au-bridge.dylib" "$dest/"
+            cp -f "$vst_root/build-$rid/zeus-plugin-probe" "$dest/"
             for lib in "$dest/libzeus-vst-bridge.dylib" "$dest/libzeus-au-bridge.dylib"; do
                 file "$lib"
                 otool -l "$lib" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print "  minos", $2; exit}'
@@ -81,6 +82,7 @@ case "$(uname -s)" in
         build "$vst_root" "$vst_root/build-$rid" \
             -DZEUS_VST_REQUIRE_SDK=ON -DZEUS_VST_BUILD_TEST_PLUGIN=OFF
         cp -f "$vst_root/build-$rid/libzeus-vst-bridge.so" "$dest/"
+        cp -f "$vst_root/build-$rid/zeus-plugin-probe" "$dest/"
         file "$dest/libzeus-vst-bridge.so"
         ;;
     *)

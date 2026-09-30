@@ -161,6 +161,19 @@ if(WIN32)
     target_link_libraries(zeus-vst-bridge PRIVATE user32 ole32)
 endif()
 
+# zeus-plugin-probe: reads a plug-in module's class list in a throw-away
+# native process during scans (src/probe_main.cpp). Ships next to the library
+# in runtimes/<rid>/native and finds it there.
+add_executable(zeus-plugin-probe src/probe_main.cpp)
+target_link_libraries(zeus-plugin-probe PRIVATE zeus-vst-bridge)
+if(APPLE)
+    set_target_properties(zeus-plugin-probe PROPERTIES
+        BUILD_RPATH "@loader_path" INSTALL_RPATH "@loader_path")
+elseif(UNIX)
+    set_target_properties(zeus-plugin-probe PROPERTIES
+        BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+endif()
+
 # Test plug-ins (test-plugin/): tiny deterministic VST3 and CLAP effects the
 # bridge tests load, so real hosting is exercised in CI on every platform.
 # Never shipped. Native ABI tests: `ctest --test-dir build -C Release`.
