@@ -1282,6 +1282,11 @@ static int post_editor_cmd(LoadedPlugin& p, int cmd, int timeoutMs,
                            std::function<void()>* call = nullptr) {
     if (!p.editor_thread_running.load()) {
         if (cmd != 1) return 0; // only 'open' starts the thread
+        // A previous editor thread that ended on its own (no X display) must
+        // be joined before the std::thread is reused, or reassigning a
+        // joinable thread calls std::terminate.
+        if (p.editor_thread.joinable()) p.editor_thread.join();
+        if (p.cmd_pipe[0] >= 0) { close(p.cmd_pipe[0]); close(p.cmd_pipe[1]); p.cmd_pipe[0] = p.cmd_pipe[1] = -1; }
         if (pipe(p.cmd_pipe) != 0) return 0;
         p.editor_thread_running.store(true);
         try { p.editor_thread = std::thread(editor_thread_main, &p); }
@@ -1799,6 +1804,9 @@ int32_t zvst_unload(zvst_handle_t handle) {
             }
         }
     }
+    // An editor thread that already ended on its own (e.g. no X display) is
+    // still joinable; destroying it unjoined would call std::terminate.
+    if (p->editor_thread.joinable()) p->editor_thread.join();
     if (p->cmd_pipe[0] >= 0) { close(p->cmd_pipe[0]); close(p->cmd_pipe[1]); }
     teardown(*p);
     delete p;
