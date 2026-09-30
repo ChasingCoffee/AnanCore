@@ -100,6 +100,23 @@ describe('TxAudioToolsPanel docked rails (Bug 2 platform affordance)', () => {
 
     unmount();
   });
+
+  it('puts the header buttons in the same order on TX and RX', async () => {
+    const { container, unmount } = render(createElement(TxAudioToolsPanel));
+    await flush(() => useAudioSuiteStore.getState().engineSupportLoaded);
+
+    const order = (region: string) =>
+      Array.from(
+        container.querySelector(`[aria-label="${region}"]`)?.querySelectorAll('button') ?? [],
+      )
+        .map((b) => b.textContent?.trim() ?? '')
+        .filter((t) => /Suite$|^Scan AU$|^\+ VST3$/.test(t));
+
+    expect(order('TX Audio')).toEqual(['TX Suite', 'Scan AU', '+ VST3']);
+    expect(order('RX Audio')).toEqual(['RX Suite', 'Scan AU', '+ VST3']);
+
+    unmount();
+  });
 });
 
 // Windows shape: the platform where the retired out-of-process engine was

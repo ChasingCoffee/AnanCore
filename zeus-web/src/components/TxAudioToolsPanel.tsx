@@ -697,9 +697,10 @@ function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
       }
       actions={
         <>
+          {/* Same order as the TX header: Suite, then Scan / + VST3. */}
+          <SuiteButton route="rx" />
           {/* Scan/Add on every platform; RX VST3 plugins run in-process. */}
           {engineSupportLoaded && <InProcessPluginScanButton route="rx" />}
-          <SuiteButton route="rx" />
         </>
       }
     >
