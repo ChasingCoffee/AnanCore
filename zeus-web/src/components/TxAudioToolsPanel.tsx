@@ -551,13 +551,9 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
   }, [chainPanels]);
 
   const masterBypassed = useAudioSuiteStore((s) => s.masterBypassed);
-  const engineSupportLoaded = useAudioSuiteStore((s) => s.engineSupportLoaded);
   const chainOrder = useAudioSuiteStore((s) => s.chainOrder);
   const loadMasterBypassFromServer = useAudioSuiteStore(
     (s) => s.loadMasterBypassFromServer,
-  );
-  const loadEngineSupportFromServer = useAudioSuiteStore(
-    (s) => s.loadEngineSupportFromServer,
   );
 
   // One route. The separate VST engine (and with it the Native/VST toggle) is
@@ -582,8 +578,7 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
 
   useEffect(() => {
     loadMasterBypassFromServer();
-    loadEngineSupportFromServer();
-  }, [loadMasterBypassFromServer, loadEngineSupportFromServer]);
+  }, [loadMasterBypassFromServer]);
 
   return (
     <RouteRail
@@ -599,17 +594,9 @@ function TxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
       }
       actions={
         <>
+          {/* Scanning (VST3 / CLAP / AU), plugin folders and clearing all live
+              in the Suite window, so the rail offers only the way in. */}
           <SuiteButton route="tx" />
-          {/* One-click Audio Suite download retired: its six plugin zips lived in
-              OpenHPSDR-Zeus-org/openhpsdr-zeus-plugins, which no longer exists, so
-              the button could only fail (issue #62). Plugins already installed keep
-              working; Settings -> Plugins installs a package from a URL or file. */}
-          {/* Scan/Add on EVERY platform. Windows used to get an engine-download
-              button here instead — and only in VST mode — which left Windows with
-              no way to add a VST3 at all (field, issue #62). The platform DTO
-              is awaited only so macOS shows 'Scan AU' rather than flashing the
-              generic label first. */}
-          {engineSupportLoaded && <InProcessPluginScanButton route="tx" />}
         </>
       }
     >
@@ -655,11 +642,6 @@ function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
   const loadRxMasterBypassFromServer = useAudioSuiteStore(
     (s) => s.loadRxMasterBypassFromServer,
   );
-  const loadEngineSupportFromServer = useAudioSuiteStore(
-    (s) => s.loadEngineSupportFromServer,
-  );
-
-  const engineSupportLoaded = useAudioSuiteStore((s) => s.engineSupportLoaded);
 
   const slots = useMemo(() => {
     const orderIndex = new Map(rxChainOrder.map((id, i) => [id, i] as const));
@@ -680,8 +662,7 @@ function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
   useEffect(() => {
     loadRxChainOrderFromServer();
     loadRxMasterBypassFromServer();
-    loadEngineSupportFromServer();
-  }, [loadRxChainOrderFromServer, loadRxMasterBypassFromServer, loadEngineSupportFromServer]);
+  }, [loadRxChainOrderFromServer, loadRxMasterBypassFromServer]);
 
   return (
     <RouteRail
@@ -697,10 +678,7 @@ function RxChainFlow({ chainPanels }: { chainPanels: RegisteredPluginPanel[] }) 
       }
       actions={
         <>
-          {/* Same order as the TX header: Suite, then Scan / + VST3. */}
           <SuiteButton route="rx" />
-          {/* Scan/Add on every platform; RX VST3 plugins run in-process. */}
-          {engineSupportLoaded && <InProcessPluginScanButton route="rx" />}
         </>
       }
     >
@@ -798,111 +776,6 @@ function routeButtonStyle(active: boolean): CSSProperties {
 }
 
 
-/**
- * In-process plugin affordance, on every platform. On macOS this scans the OS
- * AudioComponent registry for AUv2 effects and registers them into the given
- * route's insert chain in-process; everywhere it opens the suite where VST3
- * folders are added and scanned (hosted in-process by the native VST3 bridge).
- * There is no engine download: the separate engine is retired in ANAN Core.
- */
-function InProcessPluginScanButton({ route }: { route: AudioRoute }) {
-  const auSupported = useAudioSuiteStore((s) => s.auSupported);
-  const scanAuComponents = useAudioSuiteStore((s) => s.scanAuComponents);
-  const openTx = useAudioSuiteStore((s) => s.openTx);
-  const openRx = useAudioSuiteStore((s) => s.openRx);
-  const [scanning, setScanning] = useState(false);
-  const [notice, setNotice] = useState<{ tone: 'ok' | 'warn' | 'err'; text: string } | null>(
-    null,
-  );
-
-  const openSuite = route === 'tx' ? openTx : openRx;
-
-  const runScan = useCallback(async () => {
-    setScanning(true);
-    setNotice(null);
-    try {
-      const result = await scanAuComponents(route);
-      if (!result.ok) {
-        setNotice({ tone: 'err', text: result.error ?? 'AU scan failed' });
-        return;
-      }
-      if (!result.supported) {
-        setNotice({ tone: 'warn', text: 'Audio Units are macOS-only.' });
-        return;
-      }
-      const added = result.registered.length;
-      const present = result.skipped.length;
-      const failed = result.errors.length;
-      setNotice({
-        tone: failed > 0 ? 'warn' : 'ok',
-        text: `Added ${added}, already present ${present}${failed > 0 ? `, failed ${failed}` : ''}.`,
-      });
-    } finally {
-      setScanning(false);
-    }
-  }, [route, scanAuComponents]);
-
-  const scanLabel = scanning ? 'Scanning…' : auSupported ? 'Scan AU' : 'Scan plugins';
-  const scanTitle = auSupported
-    ? `Scan installed Audio Units and add them to the ${route.toUpperCase()} insert chain (in-process, no engine download)`
-    : `Open the ${route.toUpperCase()} Audio Suite to add VST3 plugin folders (hosted in-process)`;
-
-  const noticeColor =
-    notice?.tone === 'err' ? 'var(--tx)' : notice?.tone === 'warn' ? 'var(--power)' : 'var(--fg-2)';
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <button
-          type="button"
-          onClick={() => (auSupported ? void runScan() : openSuite())}
-          disabled={scanning}
-          style={inProcessScanButtonStyle(scanning)}
-          title={scanTitle}
-        >
-          {scanLabel}
-        </button>
-        {auSupported && (
-          <button
-            type="button"
-            onClick={openSuite}
-            style={inProcessScanButtonStyle(false)}
-            title={`Open the ${route.toUpperCase()} Audio Suite to add VST3 plugin folders (hosted in-process)`}
-          >
-            + VST3
-          </button>
-        )}
-      </div>
-      {notice && (
-        <span
-          role="status"
-          style={{ color: noticeColor, fontSize: 10, fontWeight: 600, letterSpacing: 0 }}
-        >
-          {notice.text}
-        </span>
-      )}
-    </div>
-  );
-}
-
-function inProcessScanButtonStyle(busy: boolean): CSSProperties {
-  return {
-    padding: '4px 12px',
-    borderRadius: 4,
-    border: '1px solid var(--accent)',
-    background: 'var(--bg-2)',
-    color: 'var(--fg-0)',
-    cursor: busy ? 'progress' : 'pointer',
-    opacity: busy ? 0.6 : 1,
-    fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: 0,
-    textTransform: 'uppercase',
-    fontFamily: 'var(--font-sans, Inter, system-ui, sans-serif)',
-    whiteSpace: 'nowrap',
-  };
-}
-
 function SuiteButton({ route }: { route: AudioRoute }) {
   const openTx = useAudioSuiteStore((s) => s.openTx);
   const openRx = useAudioSuiteStore((s) => s.openRx);
@@ -938,9 +811,6 @@ function SuiteButton({ route }: { route: AudioRoute }) {
 
 export function TxAudioToolsPanel() {
   const allPanels = usePluginPanels();
-  const loadEngineSupportFromServer = useAudioSuiteStore(
-    (s) => s.loadEngineSupportFromServer,
-  );
   const chainPanels = useMemo(
     () => allPanels.filter((p) => p.slot === CHAIN_SLOT),
     [allPanels],
@@ -949,12 +819,6 @@ export function TxAudioToolsPanel() {
     () => allPanels.filter((p) => p.slot === RX_CHAIN_SLOT),
     [allPanels],
   );
-
-  // Pull the platform affordance flags once on mount so TX/RX render the
-  // right path (Windows engine download vs macOS/Linux in-process scan).
-  useEffect(() => {
-    loadEngineSupportFromServer();
-  }, [loadEngineSupportFromServer]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
