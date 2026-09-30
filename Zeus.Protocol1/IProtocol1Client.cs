@@ -339,6 +339,19 @@ public interface IProtocol1Client : IDisposable
     void SetCwKeyerConfig(int wpm, CwKeyerMode mode);
 
     /// <summary>
+    /// Set cw_enable (C1 bit 0 of register 0x0f / wire 0x1e), Thetis'
+    /// CWFWKeyer: true only while the operator is in CWU/CWL with the radio's
+    /// own keyer. Sent on HL2 only.
+    /// </summary>
+    void SetCwEnable(bool enabled);
+
+    /// <summary>
+    /// Pin the TX frequency register to the CW carrier (dial Hz) while
+    /// cw_enable is set; 0 releases it so the register follows the RX LO.
+    /// </summary>
+    void SetCwTxFreqHz(long hz);
+
+    /// <summary>
     /// Set the TX audio front-end (external-audio-jacks re-port). Global
     /// per-radio. <paramref name="micBoost"/> / <paramref name="micLineIn"/>
     /// ride the 0x12 codec frame on Hermes-class boards; <paramref name="micTrs"/>

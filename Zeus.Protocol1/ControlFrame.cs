@@ -180,6 +180,21 @@ internal static class ControlFrame
         //   keyer_reverse = cmd_data[22]    → C2[6]
         // Wire encoding lives in WriteCwKeyerConfigPayload. See zeus-bks.
         CwKeyerConfig = 0x16,
+        // CW config register 0x0f → wire byte 0x0f << 1 = 0x1e. Thetis sends it
+        // in every rotation (networkproto1.c case 13, both write loops):
+        //   C1 = cw_enable, C2 = sidetone_level, C3 = rf_delay, C4 = 0.
+        // cw_enable is Thetis' CWFWKeyer (console.cs), true only in CWL/CWU.
+        // HL2 gateware decodes it in rtl/dsopenhpsdr1.v:393-394
+        // (`cwx_enable <= cmd_data[24]`, CWX keyed from the TX I-sample low
+        // bits 0 / 3) and rtl/cw_openhpsdr.v:35-36 (`cw_ptt_delay <=
+        // cmd_data[15:8]`). Bridges that emulate an HL2 (e.g. qmx-hl2) read
+        // C1 bit 0 to know the operator is in CW. Classic Hermes / ANAN P1
+        // gateware decodes the same bit as internal_CW, which arms the FPGA
+        // keyer and stops the TX IQ interpolator (Hermes_v3.3/Hermes.v:1620,
+        // 2173-2178) — so Zeus schedules this register on HL2 only (see
+        // Protocol1Client.CwConfigRotation). Wire encoding lives in
+        // WriteCwConfigPayload.
+        CwConfig = 0x1e,
     }
 
     /// <summary>
@@ -272,6 +287,18 @@ internal static class ControlFrame
         // no-op until the operator opts into iambic. See zeus-bks.
         int CwKeyerSpeedWpm = 0,
         CwKeyerMode CwKeyerMode = CwKeyerMode.Straight,
+        // cw_enable for the CwConfig (0x0f / wire 0x1e) frame — C1 bit 0.
+        // True only while the TX mode is CWU/CWL and no host CW source is
+        // keying (RadioService.PushCwKeyerArm, same rule as the P2 internal
+        // keyer). Default false → C1 = 0, the gateware's power-on value.
+        bool CwEnable = false,
+        // TX frequency register (0x01 / wire 0x02) override, Hz, already
+        // frequency-corrected. 0 = follow VfoAHz (today). Set only while
+        // CwEnable is: the radio's own keyer (HL2 key jack / CWX, or a bridge
+        // such as qmx-hl2) puts the carrier straight on the TX NCO, so it must
+        // carry the dial, not the RX LO (VFO ∓ pitch, or the frozen CTUN
+        // centre). The RX NCOs keep VfoAHz.
+        long TxFreqHz = 0,
         // ---- Audio front-end (external-audio-jacks re-port) -----------------
         // Two distinct P1 audio surfaces, both verified against ramdor Thetis
         // networkproto1.c and piHPSDR old_protocol.c:
@@ -348,6 +375,10 @@ internal static class ControlFrame
                 WriteConfigPayload(cc[1..], in state);
                 break;
 
+            case CcRegister.TxFreq when state.TxFreqHz > 0:
+                BinaryPrimitives.WriteUInt32BigEndian(cc[1..5], (uint)state.TxFreqHz);
+                break;
+
             case CcRegister.RxFreq:
             case CcRegister.TxFreq:
             case CcRegister.RxFreq2:
@@ -411,6 +442,10 @@ internal static class ControlFrame
 
             case CcRegister.CwKeyerConfig:
                 WriteCwKeyerConfigPayload(cc[1..], in state);
+                break;
+
+            case CcRegister.CwConfig:
+                WriteCwConfigPayload(cc[1..], in state);
                 break;
 
             default:
@@ -645,6 +680,17 @@ internal static class ControlFrame
         c14[2] = (byte)((mode << 6) | (speed & 0x3F));           // C3[7:6] mode | [5:0] speed
         c14[3] = (byte)((CwKeyerDefaultSpacing ? 1 << 7 : 0)
                         | (CwKeyerDefaultWeight & 0x7F));        // C4[7] spacing | [6:0] weight
+    }
+
+    private static void WriteCwConfigPayload(Span<byte> c14, in CcState s)
+    {
+        // Register 0x0f (Thetis networkproto1.c case 13). Sidetone level and
+        // RF delay have no P1 UI yet, so they stay 0 — the HL2 gateware's
+        // power-on cw_ptt_delay, i.e. today's behaviour.
+        c14[0] = (byte)(s.CwEnable ? 1 : 0); // C1[0] cw_enable
+        c14[1] = 0;                           // C2 sidetone level
+        c14[2] = 0;                           // C3 RF (key-down) delay, ms
+        c14[3] = 0;                           // C4
     }
 
     private static void WriteConfigPayload(Span<byte> c14, in CcState s)
@@ -920,7 +966,12 @@ internal static class ControlFrame
         // 8-byte slot). HL2 has no audio codec in the MVP target, so audio
         // bytes stay zero. The LSB of I and Q low bytes is masked off
         // (`isample & 0xFE`) — originally an HL2 CWX workaround; harmless
-        // ≤1 LSB precision loss on other Protocol-1 boards.
+        // ≤1 LSB precision loss on other Protocol-1 boards. On HL2 bit 3 of
+        // I-low is cleared too: it is the CWX PTT bit (rtl/dsopenhpsdr1.v:360,
+        // `cwx_saved <= {eth_data[3], eth_data[0]}`), live whenever cw_enable
+        // (register 0x0f) is set — Thetis replaces the whole IQ word with the
+        // CWX bits then (networkproto1.c ~1252). It sits below the HL2's
+        // 12-bit DAC, so clearing it costs nothing.
         //
         // Pre-conditions for writing a non-zero payload: MOX engaged and an IQ
         // source is plumbed through. The wire format (L/R audio + I/Q s16 BE)
@@ -958,6 +1009,7 @@ internal static class ControlFrame
         const double amplitude = 1.0;
 
         var payload = frame[8..];
+        byte iLowMask = state.Board == HpsdrBoardKind.HermesLite2 ? (byte)0xF6 : (byte)0xFE;
         int peak = 0;
         long sumAbs = 0;
         int firstI = 0, firstQ = 0;
@@ -973,7 +1025,7 @@ internal static class ControlFrame
             int off = s * 8;
             // Audio L/R stay zero (payload was cleared).
             payload[off + 4] = (byte)((iSample >> 8) & 0xFF);
-            payload[off + 5] = (byte)(iSample & 0xFE);
+            payload[off + 5] = (byte)(iSample & iLowMask);
             payload[off + 6] = (byte)((qSample >> 8) & 0xFF);
             payload[off + 7] = (byte)(qSample & 0xFE);
         }

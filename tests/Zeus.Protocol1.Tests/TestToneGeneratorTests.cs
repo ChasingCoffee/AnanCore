@@ -234,7 +234,8 @@ public class TestToneGeneratorTests
         short actualI = (short)(((buf2[firstSampleOffset + 4] & 0xFF) << 8) | (buf2[firstSampleOffset + 5] & 0xFF));
         short actualQ = (short)(((buf2[firstSampleOffset + 6] & 0xFF) << 8) | (buf2[firstSampleOffset + 7] & 0xFF));
 
-        Assert.Equal((short)(expectedI & unchecked((short)0xFFFE)), actualI);
+        // HL2 clears I-low bits 0 and 3 (CWX key / CWX PTT); Q only bit 0.
+        Assert.Equal((short)(expectedI & unchecked((short)0xFFF6)), actualI);
         Assert.Equal((short)(expectedQ & unchecked((short)0xFFFE)), actualQ);
     }
 
