@@ -24,6 +24,7 @@
 //   hang-process  never return from process()
 //   nan-process   write NaN into every output sample
 //   latency-N     report N samples of latency (e.g. latency-256)
+//   only-64       refuse 32-bit processing (64-bit samples only)
 
 #include "public.sdk/source/vst/vstsinglecomponenteffect.h"
 #include "public.sdk/source/main/pluginfactory.h"
@@ -85,7 +86,8 @@ public:
     }
 
     tresult PLUGIN_API canProcessSampleSize(int32 size) SMTG_OVERRIDE {
-        return (size == kSample32 || size == kSample64) ? kResultTrue : kResultFalse;
+        if (size == kSample32) return fault() == "only-64" ? kResultFalse : kResultTrue;
+        return size == kSample64 ? kResultTrue : kResultFalse;
     }
 
     uint32 PLUGIN_API getLatencySamples() SMTG_OVERRIDE {

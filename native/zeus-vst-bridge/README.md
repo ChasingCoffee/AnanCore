@@ -13,10 +13,31 @@ submodule pinned to a release tag (currently `v3.8.1_build_84`):
 `setupProcessing` / `setActive` / `setProcessing` / `process` (see
 `src/bridge.cpp`).
 
+What the host does per plug-in (ABI v4):
+
+- **Class selection** — `zvst_load_vst3_class` loads one effect out of a
+  multi-class module by the UID `zvst_describe` reports.
+- **State** — `zvst_get_state` / `zvst_set_state` carry a versioned blob
+  (`ZVS1` | component length | controller length | component state |
+  controller state). Restoring holds a lock the audio thread only
+  try-locks, so blocks pass through unprocessed instead of waiting.
+  Controller state that arrives before the editor exists is held and
+  applied when the controller is created.
+- **Editors** — Windows (HWND, per-plug-in UI thread), Linux (X11 embed,
+  editor thread) and macOS (NSView in an NSWindow on the main thread, via
+  `src/mac_ui.mm`). On macOS every non-audio call runs on the main thread
+  when the host runs an AppKit loop (desktop mode); headless, editors are
+  unavailable. Plug-in output parameters (meters) are forwarded to the
+  editor at ~30 Hz.
+- **Precision** — 32-bit float end to end; a plug-in that only processes
+  64-bit samples is hosted through a conversion at the boundary.
+- **Buses** — every declared bus gets buffers; sidechain / aux inputs read
+  silence.
+
 The C ABI in `include/zvst.h` is stable; the .NET P/Invoke side is
-`Zeus.Plugins.Host.Audio.VstBridgeNative`, exercised end to end by
-`VstBridgeTestPluginTests` (against the in-tree test plug-in, below) and
-`VstBridgeNativeRealTests`.
+`Zeus.Plugins.Host.Audio.VstBridgeNative`, exercised by the native ctest
+suite (`tests/bridge_tests.cpp`), `VstBridgeTestPluginTests` (against the
+in-tree test plug-in, below) and `VstBridgeNativeRealTests`.
 
 If the `vst3sdk` submodule is not initialised, CMake builds
 `src/bridge_stub.cpp` instead: the same ABI, but every load and describe
@@ -56,6 +77,8 @@ Output:
 - Windows: `build/Release/zeus-vst-bridge.dll`
 - Test plug-in: `build/test-plugin/ZeusTestPlugin.vst3`
   (`-DZEUS_VST_BUILD_TEST_PLUGIN=OFF` to skip)
+
+Native tests: `ctest --test-dir build -C Release --output-on-failure`.
 
 `dotnet test` picks up a local build automatically: the
 `Zeus.Plugins.Host.Tests` project copies the bridge into its output, and

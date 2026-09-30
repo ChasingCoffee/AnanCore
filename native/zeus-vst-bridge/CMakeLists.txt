@@ -85,8 +85,16 @@ if(ZEUS_USE_VST3SDK)
             ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_linux.cpp)
     endif()
 
+    set(ZEUS_BRIDGE_SOURCES src/bridge.cpp)
+    if(APPLE)
+        # AppKit editor hosting (NSWindow + main-thread dispatch), ARC.
+        enable_language(OBJCXX)
+        list(APPEND ZEUS_BRIDGE_SOURCES src/mac_ui.mm)
+        set_source_files_properties(src/mac_ui.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    endif()
+
     add_library(zeus-vst-bridge SHARED
-        src/bridge.cpp
+        ${ZEUS_BRIDGE_SOURCES}
         ${VST3SDK_SOURCES}
     )
 
@@ -103,8 +111,9 @@ if(ZEUS_USE_VST3SDK)
     if(APPLE)
         find_library(COREFOUNDATION_LIB CoreFoundation)
         find_library(FOUNDATION_LIB    Foundation)
+        find_library(APPKIT_LIB        AppKit)
         target_link_libraries(zeus-vst-bridge PRIVATE
-            ${COREFOUNDATION_LIB} ${FOUNDATION_LIB})
+            ${COREFOUNDATION_LIB} ${FOUNDATION_LIB} ${APPKIT_LIB})
         # vst3sdk's module_mac.mm requires ARC.
         set_source_files_properties(
             ${VST3SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
@@ -129,6 +138,19 @@ if(ZEUS_USE_VST3SDK)
     option(ZEUS_VST_BUILD_TEST_PLUGIN "Build the ZeusTestPlugin.vst3 test fixture" ON)
     if(ZEUS_VST_BUILD_TEST_PLUGIN)
         add_subdirectory(test-plugin)
+
+        # Native ABI tests against the test plug-in: `ctest --test-dir build -C Release`.
+        enable_testing()
+        add_executable(zeus-vst-bridge-tests tests/bridge_tests.cpp)
+        target_link_libraries(zeus-vst-bridge-tests PRIVATE zeus-vst-bridge)
+        add_test(NAME zvst-abi
+                 COMMAND zeus-vst-bridge-tests
+                         "${CMAKE_CURRENT_BINARY_DIR}/test-plugin/ZeusTestPlugin.vst3")
+        if(WIN32)
+            # Run next to the freshly built DLL.
+            set_tests_properties(zvst-abi PROPERTIES
+                WORKING_DIRECTORY "$<TARGET_FILE_DIR:zeus-vst-bridge>")
+        endif()
     endif()
 else()
     # Stub fallback: exports the full zvst.h ABI but loads nothing

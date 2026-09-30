@@ -84,4 +84,21 @@ int32_t zvst_get_latency_samples(zvst_handle_t handle) {
     return 0;
 }
 
+int32_t zvst_load_vst3_class(const char* path, const char* class_uid, int32_t channels,
+                             int32_t sample_rate, int32_t block_size, zvst_handle_t* out_handle) {
+    (void)class_uid;
+    return zvst_load_vst3(path, channels, sample_rate, block_size, out_handle);
+}
+
+int32_t zvst_get_state(zvst_handle_t handle, uint8_t* out_buf, int32_t cap, int32_t* out_len) {
+    (void)out_buf; (void)cap;
+    if (out_len) *out_len = 0;
+    return handle ? ZVST_NOT_IMPLEMENTED : ZVST_INVALID_HANDLE;
+}
+
+int32_t zvst_set_state(zvst_handle_t handle, const uint8_t* data, int32_t len) {
+    (void)data; (void)len;
+    return handle ? ZVST_NOT_IMPLEMENTED : ZVST_INVALID_HANDLE;
+}
+
 } // extern "C"
