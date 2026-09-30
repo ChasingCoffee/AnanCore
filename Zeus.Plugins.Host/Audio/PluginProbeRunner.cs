@@ -26,11 +26,22 @@ public sealed record ProbeResult(ProbeOutcome Outcome, string Message, PluginPro
 /// Parent side of <see cref="PluginProbe"/>: runs the host binary in probe
 /// mode, with a time limit, and reads its one-line JSON reply. A probe that
 /// exits without a reply crashed; one that overruns is killed.
+/// <para>
+/// Scans read class lists with the native <c>zeus-plugin-probe</c> when it
+/// ships beside the bridge: it starts in milliseconds and a crash is filed
+/// under it rather than under the app. Trial loads always use the host binary,
+/// which inherits this process's environment, so the verdict reflects how the
+/// plugin behaves inside the process that will actually run it.
+/// </para>
 /// </summary>
 public sealed class PluginProbeRunner
 {
     /// <summary>Environment override: the executable to run probes with.</summary>
     public const string ExecutableEnvVar = "ZEUS_PLUGIN_PROBE";
+
+    /// <summary>File name of the native describer beside the bridge library.</summary>
+    public static string NativeProbeFileName =>
+        OperatingSystem.IsWindows() ? "zeus-plugin-probe.exe" : "zeus-plugin-probe";
 
     private readonly string _executable;
     private readonly IReadOnlyList<string> _prefixArgs;
@@ -40,6 +51,9 @@ public sealed class PluginProbeRunner
         _executable = executable;
         _prefixArgs = prefixArgs ?? [];
     }
+
+    /// <summary>Native describer; null reads class lists with the host binary.</summary>
+    public string? NativeDescribeExecutable { get; init; }
 
     public TimeSpan DescribeTimeout { get; init; } = TimeSpan.FromSeconds(20);
     public TimeSpan LoadTimeout { get; init; } = TimeSpan.FromSeconds(30);
@@ -52,31 +66,43 @@ public sealed class PluginProbeRunner
     /// </summary>
     public static PluginProbeRunner? CreateDefault()
     {
+        var native = FindNativeProbe();
         var env = Environment.GetEnvironmentVariable(ExecutableEnvVar);
-        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env)) return new PluginProbeRunner(env);
+        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+            return new PluginProbeRunner(env) { NativeDescribeExecutable = native };
 
         var exeName = OperatingSystem.IsWindows() ? "OpenhpsdrZeus.exe" : "OpenhpsdrZeus";
         var self = Environment.ProcessPath;
         if (self is not null && string.Equals(Path.GetFileName(self), exeName, StringComparison.OrdinalIgnoreCase))
-            return new PluginProbeRunner(self);
+            return new PluginProbeRunner(self) { NativeDescribeExecutable = native };
         var sibling = Path.Combine(AppContext.BaseDirectory, exeName);
-        return File.Exists(sibling) ? new PluginProbeRunner(sibling) : null;
+        return File.Exists(sibling) ? new PluginProbeRunner(sibling) { NativeDescribeExecutable = native } : null;
+    }
+
+    /// <summary>The native describer in this app's runtimes folder, if shipped.</summary>
+    public static string? FindNativeProbe()
+    {
+        var dir = VstBridgeNativeLoader.NativeDirectory();
+        var path = dir is null ? null : Path.Combine(dir, NativeProbeFileName);
+        return path is not null && File.Exists(path) ? path : null;
     }
 
     public ProbeResult Describe(string path, CancellationToken ct = default) =>
-        Run(["describe", path], DescribeTimeout, ct);
+        NativeDescribeExecutable is { } native
+            ? Run(native, ["describe", path], DescribeTimeout, ct)
+            : Run(_executable, [.. _prefixArgs, PluginProbe.Flag, "describe", path], DescribeTimeout, ct);
 
     public ProbeResult TrialLoad(string format, string identity, string? classUid, CancellationToken ct = default)
     {
         var fmt = format.ToLowerInvariant() switch { "au" => "au", "clap" => "clap", _ => "vst3" };
         List<string> args = ["load", fmt, identity];
         if (fmt != "au" && !string.IsNullOrEmpty(classUid)) args.Add(classUid);
-        return Run(args, LoadTimeout, ct);
+        return Run(_executable, [.. _prefixArgs, PluginProbe.Flag, .. args], LoadTimeout, ct);
     }
 
-    private ProbeResult Run(IReadOnlyList<string> command, TimeSpan timeout, CancellationToken ct)
+    private static ProbeResult Run(string executable, IReadOnlyList<string> argv, TimeSpan timeout, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo(_executable)
+        var psi = new ProcessStartInfo(executable)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
@@ -84,9 +110,7 @@ public sealed class PluginProbeRunner
             RedirectStandardInput = true,
             CreateNoWindow = true,
         };
-        foreach (var a in _prefixArgs) psi.ArgumentList.Add(a);
-        psi.ArgumentList.Add(PluginProbe.Flag);
-        foreach (var a in command) psi.ArgumentList.Add(a);
+        foreach (var a in argv) psi.ArgumentList.Add(a);
 
         using var proc = new Process { StartInfo = psi };
         var stdout = new System.Text.StringBuilder();
@@ -114,7 +138,7 @@ public sealed class PluginProbeRunner
             proc.WaitForExit();
             ct.ThrowIfCancellationRequested();
             return new ProbeResult(ProbeOutcome.TimedOut,
-                $"the plugin did not respond within {timeout.TotalSeconds:0} s", null);
+                $"the plugin did not respond within {timeout.TotalSeconds:0} s{TimeoutHint()}", null);
         }
         proc.WaitForExit(); // drain the async readers
         ct.ThrowIfCancellationRequested();
@@ -135,6 +159,18 @@ public sealed class PluginProbeRunner
             ? new ProbeResult(ProbeOutcome.Ok, "ok", reply)
             : new ProbeResult(ProbeOutcome.Failed, reply.Error ?? $"status {reply.Status}", reply);
     }
+
+    /// <summary>
+    /// macOS: copy-protected plugins trap on purpose while they start, and the
+    /// .NET runtime swallows the trap unless the app was launched with
+    /// PAL_MachExceptionMode=2 (the app bundle's launcher sets it). Say so,
+    /// since otherwise the plugin looks merely broken.
+    /// </summary>
+    internal static string TimeoutHint() =>
+        OperatingSystem.IsMacOS()
+        && Environment.GetEnvironmentVariable("PAL_MachExceptionMode") is not { Length: > 0 }
+            ? " (copy-protected plugins need Zeus started with PAL_MachExceptionMode=2, as the app bundle does)"
+            : "";
 }
 
 /// <summary>
@@ -177,6 +213,27 @@ public sealed class PluginProbeCache
         lock (_sync)
         {
             if (Entries().Remove(key)) Save();
+        }
+    }
+
+    /// <summary>Forget every verdict whose key starts with <paramref name="prefix"/>.</summary>
+    public void ForgetPrefix(string prefix)
+    {
+        lock (_sync)
+        {
+            var keys = Entries().Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList();
+            foreach (var k in keys) _entries!.Remove(k);
+            if (keys.Count > 0) Save();
+        }
+    }
+
+    /// <summary>Forget everything (the Audio Suite's "Clear plugin list").</summary>
+    public void Clear()
+    {
+        lock (_sync)
+        {
+            Entries().Clear();
+            Save();
         }
     }
 

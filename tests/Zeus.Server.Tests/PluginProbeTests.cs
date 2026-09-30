@@ -137,6 +137,66 @@ public class PluginProbeTests : IDisposable
         Assert.Equal(ProbeOutcome.Crashed, Runner.Describe(clap).Outcome);
     }
 
+    // The native describer beside the bridge (runtimes/<rid>/native), or the
+    // one just built under native/zeus-vst-bridge/build.
+    private static string? NativeProbe()
+    {
+        var found = PluginProbeRunner.FindNativeProbe();
+        if (found is not null || Plugin is null) return found;
+        var built = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Plugin)!)!,
+            OperatingSystem.IsWindows() ? Path.Combine("Release", "zeus-plugin-probe.exe") : "zeus-plugin-probe");
+        return File.Exists(built) ? built : null;
+    }
+
+    [SkippableFact]
+    public void NativeDescribe_ReadsVst3AndClap_AndReportsFaults()
+    {
+        var native = NativeProbe();
+        Skip.If(Plugin is null || native is null, "zeus-plugin-probe or the test plug-ins not built");
+        var runner = new PluginProbeRunner("/not/used/for/describe")
+        {
+            NativeDescribeExecutable = native,
+            DescribeTimeout = TimeSpan.FromSeconds(3),
+        };
+
+        var vst3 = runner.Describe(Plugin!);
+        Assert.True(vst3.Ok, vst3.Message);
+        Assert.Equal(new[] { "Zeus Test Gain", "Zeus Test Invert" }, vst3.Reply!.Classes!.Select(c => c.Name));
+
+        var clap = ClapPlugin()!;
+        if (File.Exists(clap) || Directory.Exists(clap))
+        {
+            var described = runner.Describe(clap);
+            Assert.True(described.Ok, described.Message);
+            Assert.Contains(described.Reply!.Classes!, c => c.Uid == "org.openhpsdr.zeus.test.synth");
+        }
+
+        Assert.Equal(ProbeOutcome.Failed, runner.Describe("/no/such/plugin.vst3").Outcome);
+
+        Environment.SetEnvironmentVariable("ZEUS_TEST_VST_FAULT", "crash-scan");
+        Assert.Equal(ProbeOutcome.Crashed, runner.Describe(Plugin!).Outcome);
+        Environment.SetEnvironmentVariable("ZEUS_TEST_VST_FAULT", "hang-scan");
+        Assert.Equal(ProbeOutcome.TimedOut, runner.Describe(Plugin!).Outcome);
+    }
+
+    [Fact]
+    public void ProbeCache_ForgetPrefixAndClear()
+    {
+        var cache = new PluginProbeCache(file: null);
+        var entry = new PluginProbeCache.Entry("s", ProbeOutcome.TimedOut, "slow", DateTime.UtcNow);
+        cache.Put(ProbingPluginLoadGuard.KeyFor("vst3", "/p/A.vst3", "uid1"), entry);
+        cache.Put(ProbingPluginLoadGuard.KeyFor("vst3", "/p/A.vst3", null), entry);
+        cache.Put(ProbingPluginLoadGuard.KeyFor("vst3", "/p/B.vst3", null), entry);
+
+        cache.ForgetPrefix(ProbingPluginLoadGuard.KeyFor("vst3", "/p/A.vst3", null));
+        Assert.Null(cache.Get(ProbingPluginLoadGuard.KeyFor("vst3", "/p/A.vst3", "uid1"), "s"));
+        Assert.Null(cache.Get(ProbingPluginLoadGuard.KeyFor("vst3", "/p/A.vst3", null), "s"));
+        Assert.NotNull(cache.Get(ProbingPluginLoadGuard.KeyFor("vst3", "/p/B.vst3", null), "s"));
+
+        cache.Clear();
+        Assert.Null(cache.Get(ProbingPluginLoadGuard.KeyFor("vst3", "/p/B.vst3", null), "s"));
+    }
+
     [Fact]
     public void LoadGuard_WithoutAProbeHost_AllowsEverything()
     {

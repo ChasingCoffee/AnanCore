@@ -150,4 +150,35 @@ public class ClapBridgeTestPluginTests
             try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
         }
     }
+
+    [SkippableTheory]
+    [InlineData("clap", new[] { "Zeus Test Gain (CLAP)", "Zeus Test Invert (CLAP)" })]
+    [InlineData("vst3", new[] { "Zeus Test Gain", "Zeus Test Invert" })]
+    public async Task Scan_WithAFormat_RegistersOnlyThatFormat(string format, string[] expected)
+    {
+        Xunit.Skip.If(Skip || !Directory.Exists(Path.Combine(Fixtures!, "ZeusTestPlugin.vst3")), SkipReason);
+        var root = Path.Combine(Path.GetTempPath(), "zeus-clapscan-" + Guid.NewGuid().ToString("N"));
+        var store = new PluginSettingsStore(Path.Combine(root, "settings.db"));
+        var manager = new PluginManager(
+            loader: new PluginLoader(NullLogger<PluginLoader>.Instance),
+            settings: store,
+            services: new ServiceCollection().BuildServiceProvider(),
+            logFactory: NullLoggerFactory.Instance,
+            options: new PluginManagerOptions { PluginRoot = Path.Combine(root, "plugins") });
+        try
+        {
+            var scanner = new VstDirectoryScanService(manager, Path.Combine(root, "plugins"),
+                NullLogger<VstDirectoryScanService>.Instance);
+            var result = await scanner.ScanAsync(Fixtures!, "tx", default, format);
+
+            var names = result.Registered.Select(r => r.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+            Assert.Equal(expected, names);
+        }
+        finally
+        {
+            await manager.DisposeAsync();
+            store.Dispose();
+            try { Directory.Delete(root, recursive: true); } catch { /* ignore */ }
+        }
+    }
 }

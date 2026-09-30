@@ -88,7 +88,8 @@ public sealed class VstDirectoryScanService
     public async Task<ScanResult> ScanAsync(string directory, CancellationToken ct) =>
         await ScanAsync(directory, route: null, ct).ConfigureAwait(false);
 
-    public async Task<ScanResult> ScanAsync(string directory, string? route, CancellationToken ct)
+    /// <param name="format">"vst3" or "clap" scans only that kind of plugin; null scans both.</param>
+    public async Task<ScanResult> ScanAsync(string directory, string? route, CancellationToken ct, string? format = null)
     {
         if (string.IsNullOrWhiteSpace(directory))
             throw new ArgumentException("directory is required", nameof(directory));
@@ -100,8 +101,16 @@ public sealed class VstDirectoryScanService
         var root = _pluginRoot;
         Directory.CreateDirectory(root);
 
+        Func<string, bool> wanted = format?.ToLowerInvariant() switch
+        {
+            null or "" => _ => true,
+            "clap" => IsClap,
+            "vst3" => e => !IsClap(e),
+            _ => throw new ArgumentException($"unknown plugin format '{format}'", nameof(format)),
+        };
+
         if (exactEntry is not null)
-            return await ScanViaFileWalkAsync(directory, root, routes, ct, [exactEntry]).ConfigureAwait(false);
+            return await ScanViaFileWalkAsync(directory, root, routes, ct, wanted(exactEntry) ? [exactEntry] : []).ConfigureAwait(false);
 
         // Engine-driven enumeration when the out-of-process engine is live: it
         // uses JUCE's scanner, which expands "shell" VST3s (e.g. Waves WaveShell)
@@ -110,10 +119,11 @@ public sealed class VstDirectoryScanService
         // actually load (and blacklists crashers), so incompatible files never
         // enter the rack. Falls back to a static file walk when the engine is off
         // (Native mode), which can only see whole-file single plugins.
-        if (_engine is { IsActive: true })
+        if (_engine is { IsActive: true } && format is not "clap")
             return await ScanViaEngineAsync(directory, root, routes, ct).ConfigureAwait(false);
 
-        return await ScanViaFileWalkAsync(directory, root, routes, ct).ConfigureAwait(false);
+        return await ScanViaFileWalkAsync(directory, root, routes, ct,
+            FindVst3Entries(directory).Where(wanted).ToList()).ConfigureAwait(false);
     }
 
     // ── Engine-driven enumeration (expands Waves-style shells) ───────────────────
@@ -343,12 +353,19 @@ public sealed class VstDirectoryScanService
         var result = _probe!.Describe(abs, ct);
         if (!result.Ok)
         {
-            _probeCache?.Put(key, new PluginProbeCache.Entry(stamp, result.Outcome, result.Message, DateTime.UtcNow));
+            // A timeout may be the machine being busy (a licence check over a
+            // slow network, a scan racing other work): try it again next scan
+            // rather than writing the plugin off.
+            if (result.Outcome != ProbeOutcome.TimedOut)
+                _probeCache?.Put(key, new PluginProbeCache.Entry(stamp, result.Outcome, result.Message, DateTime.UtcNow));
             if (result.Outcome is ProbeOutcome.Crashed or ProbeOutcome.TimedOut)
                 _log.LogWarning("VST {Entry} failed while being read ({Outcome}): {Message}", entry, result.Outcome, result.Message);
             errors.Add(new ScanError(entry, $"skipped: {result.Message}"));
             return [];
         }
+        // Rescanning a plugin is the operator asking to try it again: drop any
+        // earlier refusal to load it, so the next load re-checks it.
+        _probeCache?.ForgetPrefix(ProbingPluginLoadGuard.KeyFor(IsClap(abs) ? "clap" : "vst3", abs, null));
         var found = CandidatesFromClasses(abs, fileName, result.Reply?.Classes ?? [], IsClap(abs) ? "clap" : "vst3");
         if (found.Count == 0)
             errors.Add(new ScanError(entry, "skipped: no audio effects in this plugin (instrument only)"));
