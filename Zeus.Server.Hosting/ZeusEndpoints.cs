@@ -852,6 +852,23 @@ public static class ZeusEndpoints
                 : Results.NotFound(new { error = $"no RX audio profile named '{name}'" });
         });
 
+        // The folders the Audio Suite's Scan VST3 / Scan CLAP buttons sweep.
+        // Server-side: they are paths on this machine. An empty list resets a
+        // format to the OS's standard folders (returned as defaultVst3/Clap).
+        object ScanPathsDto(PluginScanPaths p) => new
+        {
+            vst3 = p.Vst3,
+            clap = p.Clap,
+            vst3Custom = p.Vst3Custom,
+            clapCustom = p.ClapCustom,
+            defaultVst3 = Zeus.Plugins.Host.PluginSearchPaths.DefaultVst3Directories(),
+            defaultClap = Zeus.Plugins.Host.PluginSearchPaths.DefaultClapDirectories(),
+        };
+        app.MapGet("/api/audio-suite/plugin-scan-paths", (PluginScanPathsStore store) =>
+            Results.Ok(ScanPathsDto(store.Get())));
+        app.MapPut("/api/audio-suite/plugin-scan-paths", (PluginScanPathsSetRequest body, PluginScanPathsStore store) =>
+            Results.Ok(ScanPathsDto(store.Set(body.Vst3, body.Clap))));
+
         // Scan a directory for VST3 plugins and register each as an
         // installed Zeus plugin so it flows into the Audio Suite chain.
         // Each .vst3 becomes a generated plugin package (stub assembly +
@@ -865,7 +882,7 @@ public static class ZeusEndpoints
                 return Results.BadRequest(new { error = "directory is required" });
             try
             {
-                var result = await scanner.ScanAsync(body.Directory, body.Route, ct);
+                var result = await scanner.ScanAsync(body.Directory, body.Route, ct, body.Format);
                 // Scanned VSTs always land in Available, never the active chain: a
                 // scan must not change what's processing audio. Without this, a
                 // freshly-registered id that was previously active would rejoin the
@@ -906,7 +923,7 @@ public static class ZeusEndpoints
                 var route = string.IsNullOrWhiteSpace(body.Route) || string.Equals(body.Route, "auto", StringComparison.OrdinalIgnoreCase)
                     ? "tx"
                     : body.Route;
-                var result = await scanner.ScanAsync(body.Directory, route, ct);
+                var result = await scanner.ScanAsync(body.Directory, route, ct, body.Format);
                 chainOrder.ParkAll(result.Registered
                     .Where(r => VstDirectoryScanService.IsTxPluginId(r.Id))
                     .Select(r => r.Id)
@@ -943,7 +960,7 @@ public static class ZeusEndpoints
                 var route = string.IsNullOrWhiteSpace(body.Route) || string.Equals(body.Route, "auto", StringComparison.OrdinalIgnoreCase)
                     ? "rx"
                     : body.Route;
-                var result = await scanner.ScanAsync(body.Directory, route, ct);
+                var result = await scanner.ScanAsync(body.Directory, route, ct, body.Format);
                 chainOrder.ParkAll(result.Registered
                     .Where(r => VstDirectoryScanService.IsTxPluginId(r.Id))
                     .Select(r => r.Id)
@@ -6831,12 +6848,14 @@ internal sealed record NativeAudioDevicesResponse(
 internal sealed record PreviewSetRequest(bool Enabled, bool? MeterOnly = null);
 internal sealed record ChainOrderSetRequest(List<string> PluginIds);
 internal sealed record ChainMembershipSetRequest(bool Active);
-internal sealed record ScanVstDirectoryRequest(string Directory, string? Route = null);
+/// <param name="Format">"vst3" or "clap" limits the scan to that kind of plugin; null scans both.</param>
+internal sealed record ScanVstDirectoryRequest(string Directory, string? Route = null, string? Format = null);
 
 // Body for the AU scan endpoints. AUs come from the OS AudioComponent
 // registry, so there is no directory — only an optional route selector
 // ("auto" | "tx" | "rx" | "both"), mirroring the VST3 scan's Route field.
 internal sealed record ScanAuRequest(string? Route = null);
+internal sealed record PluginScanPathsSetRequest(IReadOnlyList<string>? Vst3, IReadOnlyList<string>? Clap);
 internal sealed record MasterBypassSetRequest(bool Bypassed);
 
 internal sealed record PluginBypassSetRequest(bool Bypassed);

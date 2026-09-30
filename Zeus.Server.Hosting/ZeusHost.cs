@@ -1031,6 +1031,7 @@ public static class ZeusHost
         // declare an audio component; subscribes to engine swaps so it
         // survives a Synthetic→WDSP transition mid-session.
         builder.Services.AddSingleton<AudioPluginStateStore>();
+        builder.Services.AddSingleton(_ => new PluginScanPathsStore());
         builder.Services.AddSingleton<AudioPluginBridge>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<AudioPluginBridge>());
 

@@ -107,6 +107,36 @@ public static class PluginEndpoints
             }
         });
 
+        // Forget every operator-scanned audio plugin — VST3, CLAP and Audio
+        // Units, both suites — and every probe verdict, so the next scan starts
+        // from nothing. The plugins' own files are not touched: only Zeus's
+        // registrations (generated packages under the plugin root) go.
+        app.MapPost("/api/plugins/scanned/clear", async (
+            PluginInstaller installer, Audio.PluginProbeCache probeCache, CancellationToken ct) =>
+        {
+            var ids = manager.Active.Select(p => p.Loaded.Manifest.Id).Where(IsScannedAudioPlugin).ToList();
+            int deferred = 0;
+            foreach (var id in ids)
+            {
+                try { await installer.UninstallAsync(id, ct); }
+                catch (PluginInstallException) { deferred++; }
+            }
+            // Registrations that never activated (a plugin that went missing)
+            // leave their package folder behind; sweep those too.
+            var root = PluginRoot.Get();
+            if (Directory.Exists(root))
+            {
+                foreach (var dir in Directory.EnumerateDirectories(root))
+                {
+                    var name = Path.GetFileName(dir);
+                    if (!IsScannedAudioPlugin(name) || ids.Contains(name)) continue;
+                    try { Directory.Delete(dir, recursive: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                }
+            }
+            probeCache.Clear();
+            return Results.Ok(new { removed = ids.Count - deferred, deferred });
+        });
+
         // Static UI module files. Plugins ship ES modules under
         // <PluginRoot>/<id>/ui/<file>.js; the frontend dynamic-imports
         // them via this route to register panels with the workspace.
@@ -239,6 +269,7 @@ public static class PluginEndpoints
         Audio = p.Loaded.Manifest.Audio is { } a ? new PluginAudioDto
         {
             Vst3Path = a.Vst3Path,
+            Format = a.Format,
             Slot = a.Slot,
             Channels = a.Channels,
             SampleRate = a.SampleRate,
@@ -294,6 +325,8 @@ public sealed record PluginPanelDto
 public sealed record PluginAudioDto
 {
     public string? Vst3Path { get; init; }
+    /// <summary>"vst3", "clap" or "au".</summary>
+    public string Format { get; init; } = "vst3";
     public string Slot { get; init; } = "";
     public int Channels { get; init; }
     public int SampleRate { get; init; }
