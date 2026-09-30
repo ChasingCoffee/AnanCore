@@ -49,4 +49,22 @@
     <None Include="TestData/**/*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+
+  <!-- Plugin-probe tests run the OpenhpsdrZeus host in probe mode, which loads
+       the native bridges from runtimes/<rid>/native. Copy a local cmake build
+       over the committed binaries so the probe exercises the fresh bridge
+       (same as Zeus.Plugins.Host.Tests). -->
+  <Target Name="CopyFreshPluginBridges" AfterTargets="Build">
+    <PropertyGroup>
+      <ZeusNativeRidDir>$(OutDir)runtimes/$(NETCoreSdkRuntimeIdentifier)/native</ZeusNativeRidDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\libzeus-vst-bridge.dylib" />
+      <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\libzeus-vst-bridge.so" />
+      <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\Release\zeus-vst-bridge.dll" />
+      <FreshBridge Include="$(MSBuildThisFileDirectory)..\..\native\zeus-au-bridge\build\libzeus-au-bridge.dylib" />
+    </ItemGroup>
+    <Copy SourceFiles="@(FreshBridge)" DestinationFolder="$(ZeusNativeRidDir)" Condition="Exists('%(FreshBridge.FullPath)')" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

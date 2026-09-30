@@ -38,8 +38,13 @@ extern "C" {
  * ZVST_UNSUPPORTED_PRECISION status. Existing signatures are unchanged;
  * v3 also makes zvst_load_vst3 bridge a host/plug-in channel-count
  * mismatch internally (mono host <-> stereo-only plug-in, and the
- * reverse) — the host I/O geometry stays exactly `channels` either way. */
-#define ZVST_ABI 3
+ * reverse) — the host I/O geometry stays exactly `channels` either way.
+ * v4 added zvst_load_vst3_class (pick one class out of a multi-class
+ * module), zvst_get_state / zvst_set_state, and the
+ * ZVST_BUFFER_TOO_SMALL status; editors now open on macOS too, and a
+ * plug-in that only processes 64-bit samples is hosted (the bridge
+ * converts). Existing signatures are unchanged. */
+#define ZVST_ABI 4
 
 /* Status codes — must match VstBridgeStatus in C#. */
 typedef enum zvst_status_t {
@@ -52,7 +57,8 @@ typedef enum zvst_status_t {
     ZVST_INVALID_HANDLE        = 6,
     ZVST_INVALID_ARGUMENTS     = 7,
     ZVST_NOT_IMPLEMENTED       = 8,
-    ZVST_UNSUPPORTED_PRECISION = 9,  /* plug-in refuses 32-bit float processing */
+    ZVST_UNSUPPORTED_PRECISION = 9,  /* plug-in processes neither 32- nor 64-bit samples */
+    ZVST_BUFFER_TOO_SMALL      = 10, /* caller's buffer too small; *out_len holds the size needed */
     ZVST_OTHER                 = 255
 } zvst_status_t;
 
@@ -167,8 +173,9 @@ ZVST_EXPORT int32_t zvst_describe(
  * control thread while audio runs on the realtime thread.
  *
  * Idempotent: a second open while the editor is already up returns
- * ZVST_OK. Windows-only for now; other platforms return
- * ZVST_NOT_IMPLEMENTED. zvst_unload auto-closes an open editor.
+ * ZVST_OK. Windows, Linux (X11) and macOS; on macOS the editor needs the
+ * host's AppKit run loop (desktop mode) and returns ZVST_NOT_IMPLEMENTED in
+ * a headless process. zvst_unload auto-closes an open editor.
  */
 ZVST_EXPORT int32_t zvst_editor_open(zvst_handle_t handle, const char* title);
 
@@ -197,6 +204,49 @@ ZVST_EXPORT int32_t zvst_editor_is_open(zvst_handle_t handle);
  * signature changed.
  */
 ZVST_EXPORT int32_t zvst_get_latency_samples(zvst_handle_t handle);
+
+/* --- Class selection + state — ABI v4 ---------------------------------
+ *
+ * zvst_load_vst3_class: as zvst_load_vst3, but instantiate the audio-effect
+ * class whose UID (the 32-hex-digit `uid` from zvst_describe) is `class_uid`
+ * instead of the module's first effect class — needed for modules ("shells")
+ * that carry several plug-ins. NULL or "" behaves like zvst_load_vst3.
+ * Returns ZVST_NO_AUDIO_EFFECT_CLASS when no effect class has that UID.
+ */
+ZVST_EXPORT int32_t zvst_load_vst3_class(
+    const char* path,
+    const char* class_uid,
+    int32_t channels,
+    int32_t sample_rate,
+    int32_t block_size,
+    zvst_handle_t* out_handle);
+
+/*
+ * Serialise the plug-in's complete state (processor component state plus,
+ * for plug-ins with a separate edit controller, the controller's state) into
+ * `out_buf`. The blob is opaque to the caller and only meaningful to
+ * zvst_set_state for the same plug-in class. *out_len receives the blob
+ * size; when it exceeds `cap` the call returns ZVST_BUFFER_TOO_SMALL and
+ * writes nothing, so the caller can retry with a larger buffer. Control
+ * thread; never call from the audio thread.
+ */
+ZVST_EXPORT int32_t zvst_get_state(
+    zvst_handle_t handle,
+    uint8_t* out_buf,
+    int32_t cap,
+    int32_t* out_len);
+
+/*
+ * Restore a blob from zvst_get_state. Audio blocks processed while the
+ * restore is in progress pass through unprocessed rather than wait (the
+ * realtime path never blocks). Controller state is applied to an open
+ * editor immediately, or held and applied when the editor is next created.
+ * Control thread; never call from the audio thread.
+ */
+ZVST_EXPORT int32_t zvst_set_state(
+    zvst_handle_t handle,
+    const uint8_t* data,
+    int32_t len);
 
 #ifdef __cplusplus
 }

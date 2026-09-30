@@ -165,6 +165,10 @@ public sealed class TxAudioProfileService : IHostedService
         var vstStates = new Dictionary<string, string>(
             await _mode.CaptureChainStatesAsync(CaptureTimeout, ct).ConfigureAwait(false),
             StringComparer.Ordinal);
+        // VST3 / AU plugins hosted in-process: their own native state, so the
+        // profile brings each plugin back exactly as it was set.
+        foreach (var (pid, state) in _audioBridge.CaptureHostedPluginStates(order.Concat(parked)))
+            vstStates[pid] = state;
 
         var nativeStates = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         foreach (var pid in order.Concat(parked).Distinct(StringComparer.Ordinal))
@@ -228,6 +232,7 @@ public sealed class TxAudioProfileService : IHostedService
             _pluginSettings.RestoreCollection(kv.Key, kv.Value);
 
         _mode.SetPluginStates(profile.VstPluginStates);
+        _audioBridge.RestoreHostedPluginStates(profile.VstPluginStates);
         var targetMode = string.Equals(profile.ProcessingMode, "vst", StringComparison.OrdinalIgnoreCase)
             ? AudioProcessingMode.Vst : AudioProcessingMode.Native;
         await _mode.SetModeAsync(targetMode, ct).ConfigureAwait(false);

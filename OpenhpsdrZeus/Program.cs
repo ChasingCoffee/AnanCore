@@ -174,6 +174,15 @@ public partial class Program
         // Must run before any TX pacing starts — see RaiseTimerResolutionOnWindows.
         RaiseTimerResolutionOnWindows();
 
+        // Plugin probe: touch one third-party plugin in this throw-away process
+        // (describe it, or trial-load it) so a crash or hang never reaches the
+        // server. Must precede all startup work. See PluginProbeRunner.
+        if (args.Length > 0 && args[0] == Zeus.Plugins.Host.Audio.PluginProbe.Flag)
+        {
+            AttachParentConsoleOnWindows();
+            return Zeus.Plugins.Host.Audio.PluginProbe.Run(args[1..], Console.Out);
+        }
+
         if (args.Contains("--verify-vst-bridge"))
         {
             // WinExe has no console by default — reattach so Console.WriteLine

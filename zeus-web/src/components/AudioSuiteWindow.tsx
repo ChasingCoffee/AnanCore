@@ -14,7 +14,7 @@
 // docs/lessons/dev-conventions.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Star } from 'lucide-react';
+import { Power, Star } from 'lucide-react';
 import { usePluginPanels } from '../plugins/runtime/usePluginPanels';
 import type { RegisteredPluginPanel } from '../plugins/runtime/pluginRuntime';
 import { AudioChainMeters } from './AudioChainMeters';
@@ -313,9 +313,12 @@ interface ChainChipProps {
   isDragTarget: boolean;
   isDragSource: boolean;
   isFavorite: boolean;
+  /** Plugin-level bypass: stays loaded and in position, passes audio through. */
+  bypassed: boolean;
   onSelect(): void;
   onRemove(): void;
   onToggleFavorite(): void;
+  onToggleBypass(): void;
   onHandleDown(): void;
   onDragStart(e: React.DragEvent): void;
   onDragOver(e: React.DragEvent): void;
@@ -339,9 +342,11 @@ function ChainChip({
   isDragTarget,
   isDragSource,
   isFavorite,
+  bypassed,
   onSelect,
   onRemove,
   onToggleFavorite,
+  onToggleBypass,
   onHandleDown,
   onDragStart,
   onDragOver,
@@ -371,7 +376,7 @@ function ChainChip({
         border: '1px solid ' + (accented ? 'var(--accent)' : 'var(--line)'),
         background: selected ? 'var(--accent-soft)' : 'var(--bg-2)',
         boxShadow: isDragTarget ? '0 0 0 1px var(--accent)' : 'none',
-        opacity: isDragSource ? 0.4 : 1,
+        opacity: isDragSource ? 0.4 : bypassed ? 0.6 : 1,
         cursor: 'pointer',
         userSelect: 'none',
         whiteSpace: 'nowrap',
@@ -441,6 +446,31 @@ function ChainChip({
           <Star size={12} strokeWidth={2} fill={isFavorite ? 'currentColor' : 'none'} />
         </button>
       )}
+
+      {/* Bypass: the plugin stays loaded and in its chain position (so its
+          settings and latency are kept) but passes audio straight through. */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onToggleBypass(); }}
+        aria-pressed={bypassed}
+        aria-label={bypassed ? `Re-engage ${panel.title}` : `Bypass ${panel.title}`}
+        title={bypassed ? 'Bypassed — click to re-engage' : 'Bypass (keeps it in the chain)'}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 16,
+          height: 16,
+          borderRadius: 3,
+          border: '1px solid ' + (bypassed ? 'var(--tx)' : 'var(--line)'),
+          background: bypassed ? 'var(--tx)' : 'var(--bg-1)',
+          color: bypassed ? 'var(--fg-0)' : 'var(--fg-3)',
+          cursor: 'pointer',
+          padding: 0,
+        }}
+      >
+        <Power size={10} strokeWidth={2.2} />
+      </button>
 
       {/* Remove from chain = park (non-destructive). Stops it
           processing and moves it to the sidebar's Available list;
@@ -1091,6 +1121,10 @@ export function AudioSuiteWindow({
     () => new Set(favoriteVstIds),
     [favoriteVstIds],
   );
+  const bypassedPluginIds = useAudioSuiteStore((s) => s.bypassedPluginIds);
+  const bypassedPluginIdSet = useMemo(() => new Set(bypassedPluginIds), [bypassedPluginIds]);
+  const setPluginBypassed = useAudioSuiteStore((s) => s.setPluginBypassed);
+  const loadPluginBypassFromServer = useAudioSuiteStore((s) => s.loadPluginBypassFromServer);
   // Active rack = the panels whose plugin ID is in the server's active
   // order, sorted by it. Parking removes an ID from chainOrder, so a
   // parked plugin simply falls out of here and into the sidebar.
@@ -1120,6 +1154,7 @@ export function AudioSuiteWindow({
     if (!embedded && !isOpen) return;
     // Platform affordance flags (auSupported gates the "Scan AU" control).
     loadEngineSupportFromServer();
+    loadPluginBypassFromServer();
     if (isRxSuite) {
       loadRxChainOrderFromServer();
       loadRxProcessingModeFromServer();
@@ -1139,6 +1174,7 @@ export function AudioSuiteWindow({
     isOpen,
     isRxSuite,
     loadEngineSupportFromServer,
+    loadPluginBypassFromServer,
     loadChainOrderFromServer,
     loadRxChainOrderFromServer,
     loadProcessingModeFromServer,
@@ -1392,15 +1428,12 @@ export function AudioSuiteWindow({
   };
 
   // --- VST directory scan ------------------------------------------
-  // Common Windows VST3 locations. "Scan for VSTs" sweeps all of these in
-  // one click; whichever exist are scanned, the rest are skipped silently.
-  // The standard Common Files\VST3 holds installer-placed bundles, while
-  // C:\VST PLUGINS is a widespread manual-install convention (and Zeus's
-  // historical scan default), so plugins parked there are picked up too.
-  const COMMON_VST3_DIRS = [
-    'C:\\Program Files\\Common Files\\VST3',
-    'C:\\VST PLUGINS',
-  ];
+  // "Scan for VSTs" sweeps the standard VST3 folders for the server's OS in
+  // one click (reported by the server; Windows' Common Files\VST3 and
+  // C:\VST PLUGINS, macOS' /Library and ~/Library Audio/Plug-Ins/VST3, Linux'
+  // ~/.vst3 and /usr[/local]/lib/vst3). Whichever exist are scanned, the rest
+  // are skipped silently.
+  const defaultVst3Dirs = useAudioSuiteStore((s) => s.defaultVst3Dirs);
   const [scanning, setScanning] = useState(false);
 
   // Scan one or more folders, aggregate the results, and report. Folders
@@ -1454,8 +1487,8 @@ export function AudioSuiteWindow({
   };
 
   // One-click sweep of the common VST3 locations.
-  const onScanDefaultVstDirectory = () => void runScan(COMMON_VST3_DIRS, route);
-  const onScanBothDefaultVstDirectory = () => void runScan(COMMON_VST3_DIRS, 'both');
+  const onScanDefaultVstDirectory = () => void runScan(defaultVst3Dirs, route);
+  const onScanBothDefaultVstDirectory = () => void runScan(defaultVst3Dirs, 'both');
   // Prompt for a specific folder, then scan just that one.
   const onScanVstDirectory = async () => {
     setScanFolderOpen(true);
@@ -2057,9 +2090,17 @@ export function AudioSuiteWindow({
             isDragTarget={cardDragOver === idx}
             isDragSource={cardDragFrom === idx}
             isFavorite={favoriteVstIdSet.has(panel.pluginId)}
+            bypassed={bypassedPluginIdSet.has(panel.pluginId)}
             onSelect={() => setSelectedChainId(panel.pluginId)}
             onRemove={() => void setActiveChainMembership(panel.pluginId, false)}
             onToggleFavorite={() => toggleFavoriteVst(panel.pluginId)}
+            onToggleBypass={() =>
+              void setPluginBypassed(
+                isRxSuite ? 'rx' : 'tx',
+                panel.pluginId,
+                !bypassedPluginIdSet.has(panel.pluginId),
+              )
+            }
             onHandleDown={onCardHandleDown}
             onDragStart={onCardDragStart(idx)}
             onDragOver={onCardDragOver(idx)}
@@ -2154,8 +2195,8 @@ export function AudioSuiteWindow({
         <TextInputDialog
           title="Scan VST folder"
           label="Folder path"
-          initialValue="C:\\VST PLUGINS"
-          placeholder="C:\\VST PLUGINS"
+          initialValue={defaultVst3Dirs[0] ?? ''}
+          placeholder={defaultVst3Dirs[0] ?? ''}
           confirmLabel="Scan Folder"
           onCancel={() => setScanFolderOpen(false)}
           onSubmit={(dir) => {

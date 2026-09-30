@@ -511,6 +511,9 @@ public static class ZeusEndpoints
                 engineSupported = OperatingSystem.IsWindows(),
                 inProcessHostSupported = true,
                 auSupported = OperatingSystem.IsMacOS(),
+                // The standard VST3 folders for the server's OS, swept by the
+                // Audio Suite's one-click scan.
+                defaultVst3Dirs = Zeus.Plugins.Host.PluginSearchPaths.DefaultVst3Directories(),
             };
         }
         app.MapGet("/api/audio-suite/vst-engine/install", (VstEngineInstaller installer) =>
@@ -622,6 +625,25 @@ public static class ZeusEndpoints
                 return Results.Ok(new { pluginIds = rxChainOrder.CurrentOrder });
             return Results.BadRequest(new { error = err });
         });
+
+        // Per-plugin bypass (TX and RX suites). A bypassed plugin stays loaded
+        // and keeps its chain position; its slot passes audio through. GET
+        // lists every bypassed id (the UI filters by suite); PUT toggles one.
+        app.MapGet("/api/tx-audio-suite/plugins/bypass", (AudioPluginBridge bridge) =>
+            Results.Ok(new { pluginIds = bridge.BypassedPluginIds }));
+        app.MapGet("/api/rx-audio-suite/plugins/bypass", (AudioPluginBridge bridge) =>
+            Results.Ok(new { pluginIds = bridge.BypassedPluginIds }));
+        static IResult SetPluginBypass(string id, PluginBypassSetRequest? body, AudioPluginBridge bridge)
+        {
+            if (body is null) return Results.BadRequest(new { error = "bypassed is required" });
+            return bridge.SetPluginBypassed(id, body.Bypassed)
+                ? Results.Ok(new { pluginIds = bridge.BypassedPluginIds })
+                : Results.NotFound(new { error = $"plugin '{id}' is not hosted" });
+        }
+        app.MapPut("/api/tx-audio-suite/plugins/{id}/bypass",
+            (string id, PluginBypassSetRequest body, AudioPluginBridge bridge) => SetPluginBypass(id, body, bridge));
+        app.MapPut("/api/rx-audio-suite/plugins/{id}/bypass",
+            (string id, PluginBypassSetRequest body, AudioPluginBridge bridge) => SetPluginBypass(id, body, bridge));
 
         app.MapGet("/api/rx-audio-suite/master-bypass", (AudioChainMasterBypassService svc) =>
         {
@@ -6814,6 +6836,8 @@ internal sealed record ScanVstDirectoryRequest(string Directory, string? Route =
 // ("auto" | "tx" | "rx" | "both"), mirroring the VST3 scan's Route field.
 internal sealed record ScanAuRequest(string? Route = null);
 internal sealed record MasterBypassSetRequest(bool Bypassed);
+
+internal sealed record PluginBypassSetRequest(bool Bypassed);
 internal sealed record ProcessingModeSetRequest(string Mode);
 internal sealed record TxStageDensityDiagnostics(
     double? OutputHeadroomDb,

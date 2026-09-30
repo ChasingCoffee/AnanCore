@@ -65,6 +65,16 @@ public static class ServiceCollectionExtensions
             pluginRoot: options?.PluginRoot ?? PluginRoot.Get(),
             log: sp.GetRequiredService<ILogger<PluginIdMigrator>>()));
 
+        // Plugin probing: third-party plugins are described and trial-loaded
+        // in a child process first, so one that crashes or hangs can't take the
+        // server down. Verdicts are cached beside the scanned packages.
+        services.AddSingleton(_ => new Audio.PluginProbeCache(
+            Path.Combine(options?.PluginRoot ?? PluginRoot.Get(), ".probe-cache.json")));
+        services.AddSingleton<Audio.IPluginLoadGuard>(sp => new Audio.ProbingPluginLoadGuard(
+            Audio.PluginProbeRunner.CreateDefault(),
+            sp.GetRequiredService<Audio.PluginProbeCache>(),
+            sp.GetService<ILogger<Audio.ProbingPluginLoadGuard>>()));
+
         // VST directory scanner — registers each .vst3 in an operator-
         // chosen folder as a generated plugin package (stub assembly +
         // synthesized manifest), so VSTs flow into the Audio Suite chain.
@@ -75,7 +85,9 @@ public static class ServiceCollectionExtensions
             // Optional: when the out-of-process engine is registered (it is in the
             // Zeus host), the scanner enumerates through it so shell VST3s like
             // Waves WaveShell expand into their hosted sub-plugins.
-            engine: sp.GetService<Audio.VstEngineController>()));
+            engine: sp.GetService<Audio.VstEngineController>(),
+            probe: Audio.PluginProbeRunner.CreateDefault(),
+            probeCache: sp.GetRequiredService<Audio.PluginProbeCache>()));
 
         // AU component scanner — the macOS-only sibling of the VST3 scanner.
         // Enumerates installed AUv2 'aufx' effects from the OS AudioComponent
