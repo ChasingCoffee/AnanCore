@@ -5,6 +5,7 @@ import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from './meters/__tests__/harness';
 import { GenericVstPanel } from './GenericVstPanel';
+import { useAudioSuiteStore } from '../state/audio-suite-store';
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -16,6 +17,7 @@ function jsonResponse(body: unknown): Response {
 describe('GenericVstPanel', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    useAudioSuiteStore.setState({ editorOpenRequest: null });
   });
 
   it('waits for Open Editor instead of opening the editor when shown', async () => {
@@ -47,6 +49,47 @@ describe('GenericVstPanel', () => {
       await Promise.resolve();
     });
     expect(posts()).toHaveLength(1);
+
+    unmount();
+  });
+
+  it('opens the editor when its chip was clicked, once', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) =>
+      jsonResponse({ open: init?.method === 'POST' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    // What a chip click leaves behind (AudioSuiteWindow's onSelect).
+    useAudioSuiteStore.getState().requestEditorOpen('com.openhpsdr.zeus.vst.clear');
+
+    const { unmount } = render(
+      createElement(GenericVstPanel, { pluginId: 'com.openhpsdr.zeus.vst.clear', name: 'Clear' }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(useAudioSuiteStore.getState().editorOpenRequest).toBeNull();
+
+    unmount();
+  });
+
+  it("ignores a chip click meant for another plugin", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({ open: false }));
+    vi.stubGlobal('fetch', fetchMock);
+    useAudioSuiteStore.getState().requestEditorOpen('com.openhpsdr.zeus.vst.other');
+
+    const { unmount } = render(
+      createElement(GenericVstPanel, { pluginId: 'com.openhpsdr.zeus.vst.clear', name: 'Clear' }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    expect(useAudioSuiteStore.getState().editorOpenRequest).toBe('com.openhpsdr.zeus.vst.other');
 
     unmount();
   });

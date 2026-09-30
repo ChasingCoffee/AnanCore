@@ -1234,6 +1234,7 @@ export function AudioSuiteWindow({
   const selectedChainId = useAudioSuiteStore((s) =>
     isRxSuite ? s.rxSelectedChainId : s.selectedChainId,
   );
+  const requestEditorOpen = useAudioSuiteStore((s) => s.requestEditorOpen);
   const setSelectedChainIdForRoute = useAudioSuiteStore(
     (s) => s.setSelectedChainIdForRoute,
   );
@@ -2312,7 +2313,12 @@ export function AudioSuiteWindow({
             isDragSource={cardDragFrom === idx}
             isFavorite={favoriteVstIdSet.has(panel.pluginId)}
             bypassed={bypassedPluginIdSet.has(panel.pluginId)}
-            onSelect={() => setSelectedChainId(panel.pluginId)}
+            onSelect={() => {
+              setSelectedChainId(panel.pluginId);
+              // Clicking a plugin's chip opens its editor; the Suite's own
+              // selection of the first plugin does not.
+              if (panel.editorBacked === true) requestEditorOpen(panel.pluginId);
+            }}
             onRemove={() => void setActiveChainMembership(panel.pluginId, false)}
             onToggleFavorite={() => toggleFavoriteVst(panel.pluginId)}
             onToggleBypass={() =>

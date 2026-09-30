@@ -113,6 +113,10 @@ export function useVstEditor(
     };
   }, []);
 
+  // Set once an open/close request starts: from then on its reply is the
+  // truth, and a slower mount-time read must not overwrite it.
+  const requestedRef = useRef(false);
+
   // Reflect the actual editor state on mount — the native window may
   // already be open from a previous interaction (state lives server-side).
   useEffect(() => {
@@ -121,7 +125,7 @@ export function useVstEditor(
     fetch(base)
       .then((r) => (r.ok ? r.json() : null))
       .then((j) => {
-        if (alive && j && typeof j.open === 'boolean') setOpen(j.open);
+        if (alive && !requestedRef.current && j && typeof j.open === 'boolean') setOpen(j.open);
       })
       .catch(() => {
         /* transient — leave state as-is */
@@ -155,6 +159,7 @@ export function useVstEditor(
 
   const request = useCallback(
     async (wantOpen: boolean) => {
+      requestedRef.current = true;
       setBusy(true);
       setError(null);
       setStarting(false);

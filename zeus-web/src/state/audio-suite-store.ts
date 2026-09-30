@@ -210,6 +210,13 @@ interface AudioSuiteState {
 
   // Chips+detail selection.
   setSelectedChainId(id: string | null): void;
+  // A plugin whose editor the operator asked to open by clicking its chip.
+  // The plugin's panel opens the editor and clears the request; selecting a
+  // plugin any other way (the Suite picking the first one) opens nothing.
+  // Not persisted.
+  editorOpenRequest: string | null;
+  requestEditorOpen(pluginId: string): void;
+  clearEditorOpenRequest(): void;
   setSelectedChainIdForRoute(route: AudioSuiteRoute, id: string | null): void;
 
   // Profile selection.
@@ -630,6 +637,9 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
         ),
 
       setSelectedChainId: (id) => set({ selectedChainId: id }),
+      editorOpenRequest: null,
+      requestEditorOpen: (pluginId) => set({ editorOpenRequest: pluginId }),
+      clearEditorOpenRequest: () => set({ editorOpenRequest: null }),
       setSelectedChainIdForRoute: (route, id) =>
         set(route === 'rx' ? { rxSelectedChainId: id } : { selectedChainId: id }),
 
