@@ -331,11 +331,14 @@ interface AudioSuiteState {
   //                            on macOS) host plugins without any engine
   //                            download. True on every platform.
   //   auSupported            — Audio Units can be scanned/hosted (macOS only).
+  //   defaultVst3Dirs        — the standard VST3 folders on the server's OS,
+  //                            swept by the one-click "Scan VSTs".
   // engineSupportLoaded gates first-paint so the panel doesn't flash the
   // wrong affordance before the DTO arrives.
   engineSupported: boolean;
   inProcessHostSupported: boolean;
   auSupported: boolean;
+  defaultVst3Dirs: string[];
   engineSupportLoaded: boolean;
   loadEngineSupportFromServer(): Promise<void>;
 }
@@ -369,6 +372,16 @@ type AudioSuitePersistedState = Pick<
 >;
 
 // Default window placement — top-left quadrant, room for plugin panels.
+// Fallback VST3 scan folders when the server predates `defaultVst3Dirs` —
+// the Windows set Zeus has always swept.
+const WINDOWS_VST3_DIRS = ['C:\\Program Files\\Common Files\\VST3', 'C:\\VST PLUGINS'];
+
+function normalizeDirList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const dirs = value.filter((d): d is string => typeof d === 'string' && d.trim().length > 0);
+  return dirs.length > 0 ? dirs : null;
+}
+
 const DEFAULT_X = 80;
 const DEFAULT_Y = 80;
 const DEFAULT_WIDTH = 860;
@@ -431,6 +444,7 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
       engineSupported: true,
       inProcessHostSupported: true,
       auSupported: false,
+      defaultVst3Dirs: WINDOWS_VST3_DIRS,
       engineSupportLoaded: false,
       isDragging: false,
       collapsed: {},
@@ -1416,11 +1430,13 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
             engineSupported?: boolean;
             inProcessHostSupported?: boolean;
             auSupported?: boolean;
+            defaultVst3Dirs?: unknown;
           };
           set({
             engineSupported: body.engineSupported !== false,
             inProcessHostSupported: body.inProcessHostSupported !== false,
             auSupported: body.auSupported === true,
+            defaultVst3Dirs: normalizeDirList(body.defaultVst3Dirs) ?? WINDOWS_VST3_DIRS,
             engineSupportLoaded: true,
           });
         } catch (err) {

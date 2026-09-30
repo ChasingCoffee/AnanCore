@@ -511,6 +511,9 @@ public static class ZeusEndpoints
                 engineSupported = OperatingSystem.IsWindows(),
                 inProcessHostSupported = true,
                 auSupported = OperatingSystem.IsMacOS(),
+                // The standard VST3 folders for the server's OS, swept by the
+                // Audio Suite's one-click scan.
+                defaultVst3Dirs = Zeus.Plugins.Host.PluginSearchPaths.DefaultVst3Directories(),
             };
         }
         app.MapGet("/api/audio-suite/vst-engine/install", (VstEngineInstaller installer) =>
