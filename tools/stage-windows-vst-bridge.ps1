@@ -22,7 +22,7 @@ if ($InitSubmodules) {
     git -C (Join-Path $bridgeRoot "third_party\vst3sdk") submodule update --init base pluginterfaces public.sdk cmake
 }
 
-cmake -S $bridgeRoot -B $buildDir -G "Visual Studio 17 2022" -A $cmakeArch
+cmake -S $bridgeRoot -B $buildDir -G "Visual Studio 17 2022" -A $cmakeArch -DZEUS_VST_REQUIRE_SDK=ON -DZEUS_VST_BUILD_TEST_PLUGIN=OFF
 cmake --build $buildDir --config $Configuration --parallel
 
 if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {

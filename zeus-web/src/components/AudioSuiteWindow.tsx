@@ -1392,15 +1392,12 @@ export function AudioSuiteWindow({
   };
 
   // --- VST directory scan ------------------------------------------
-  // Common Windows VST3 locations. "Scan for VSTs" sweeps all of these in
-  // one click; whichever exist are scanned, the rest are skipped silently.
-  // The standard Common Files\VST3 holds installer-placed bundles, while
-  // C:\VST PLUGINS is a widespread manual-install convention (and Zeus's
-  // historical scan default), so plugins parked there are picked up too.
-  const COMMON_VST3_DIRS = [
-    'C:\\Program Files\\Common Files\\VST3',
-    'C:\\VST PLUGINS',
-  ];
+  // "Scan for VSTs" sweeps the standard VST3 folders for the server's OS in
+  // one click (reported by the server; Windows' Common Files\VST3 and
+  // C:\VST PLUGINS, macOS' /Library and ~/Library Audio/Plug-Ins/VST3, Linux'
+  // ~/.vst3 and /usr[/local]/lib/vst3). Whichever exist are scanned, the rest
+  // are skipped silently.
+  const defaultVst3Dirs = useAudioSuiteStore((s) => s.defaultVst3Dirs);
   const [scanning, setScanning] = useState(false);
 
   // Scan one or more folders, aggregate the results, and report. Folders
@@ -1454,8 +1451,8 @@ export function AudioSuiteWindow({
   };
 
   // One-click sweep of the common VST3 locations.
-  const onScanDefaultVstDirectory = () => void runScan(COMMON_VST3_DIRS, route);
-  const onScanBothDefaultVstDirectory = () => void runScan(COMMON_VST3_DIRS, 'both');
+  const onScanDefaultVstDirectory = () => void runScan(defaultVst3Dirs, route);
+  const onScanBothDefaultVstDirectory = () => void runScan(defaultVst3Dirs, 'both');
   // Prompt for a specific folder, then scan just that one.
   const onScanVstDirectory = async () => {
     setScanFolderOpen(true);
@@ -2154,8 +2151,8 @@ export function AudioSuiteWindow({
         <TextInputDialog
           title="Scan VST folder"
           label="Folder path"
-          initialValue="C:\\VST PLUGINS"
-          placeholder="C:\\VST PLUGINS"
+          initialValue={defaultVst3Dirs[0] ?? ''}
+          placeholder={defaultVst3Dirs[0] ?? ''}
           confirmLabel="Scan Folder"
           onCancel={() => setScanFolderOpen(false)}
           onSubmit={(dir) => {

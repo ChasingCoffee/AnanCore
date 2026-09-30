@@ -280,8 +280,17 @@ struct LoadedPlugin {
 
     // ProcessData reused across calls. AudioBusBuffers vectors must be
     // stable storage because ProcessData stores raw pointers into them.
-    vst::AudioBusBuffers              in_bus{};
-    vst::AudioBusBuffers              out_bus{};
+    // One entry per audio bus the plug-in declares: index 0 is the main bus
+    // we route the radio audio through; any further buses (sidechain inputs,
+    // aux outputs) are inactive but the VST3 contract still requires a
+    // buffer array per bus sized to its arrangement, so they point at
+    // silent / discard scratch below.
+    std::vector<vst::AudioBusBuffers> in_buses;
+    std::vector<vst::AudioBusBuffers> out_buses;
+    std::vector<float*>               aux_in_ptrs;   // all aux input channels -> aux_silence
+    std::vector<float*>               aux_out_ptrs;  // all aux output channels -> aux_discard
+    std::vector<float>                aux_silence;   // block_size zeros, re-zeroed each block
+    std::vector<float>                aux_discard;   // block_size scratch, ignored
     vst::ProcessData                  process_data{};
     vst::ProcessSetup                 process_setup{};
     vst::ParameterChanges             input_changes;  // for set_param queueing
@@ -404,10 +413,8 @@ instantiate_first_audio_effect(const VST3::Hosting::PluginFactory& factory,
 bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     using namespace Steinberg;
 
-    if (p.component->setActive(false) != kResultOk) {
-        // not fatal; some plugins return error here pre-init
-    }
-
+    // No setActive() here: the spec only allows it once setup is done, and
+    // some plug-ins (u-he) dereference state that initialize() creates.
     if (p.component->setIoMode(vst::kAdvanced) != kResultOk) {
         // optional, ignore
     }
@@ -438,8 +445,28 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     // path, so it fails the load. (The previous revision forced stereo for a
     // mono host but left the bus geometry at 1 channel — a latent mismatch
     // that fed stereo-arranged plug-ins a single buffer pointer.)
+    //
+    // setBusArrangements takes one arrangement per bus. Plug-ins with a
+    // sidechain input (FabFilter Pro-Q/Pro-C, most compressors/gates) refuse
+    // a call that names fewer buses than they declare, so the main bus gets
+    // the arrangement under negotiation and every aux bus keeps its own.
+    const int32 in_bus_count  = p.component->getBusCount(vst::kAudio, vst::kInput);
+    const int32 out_bus_count = p.component->getBusCount(vst::kAudio, vst::kOutput);
+    if (in_bus_count < 1 || out_bus_count < 1) {
+        *status_out = ZVST_ACTIVATE_FAILED;
+        return false;
+    }
+    std::vector<vst::SpeakerArrangement> in_arr(static_cast<size_t>(in_bus_count), 0);
+    std::vector<vst::SpeakerArrangement> out_arr(static_cast<size_t>(out_bus_count), 0);
+    for (int32 i = 0; i < in_bus_count; i++)
+        p.processor->getBusArrangement(vst::kInput, i, in_arr[static_cast<size_t>(i)]);
+    for (int32 i = 0; i < out_bus_count; i++)
+        p.processor->getBusArrangement(vst::kOutput, i, out_arr[static_cast<size_t>(i)]);
     auto try_arrangement = [&](vst::SpeakerArrangement a) -> bool {
-        return p.processor->setBusArrangements(&a, 1, &a, 1) == kResultTrue;
+        in_arr[0] = a;
+        out_arr[0] = a;
+        return p.processor->setBusArrangements(in_arr.data(), in_bus_count,
+                                               out_arr.data(), out_bus_count) == kResultTrue;
     };
     const vst::SpeakerArrangement want = (p.channels == 1)
         ? vst::SpeakerArr::kMono : vst::SpeakerArr::kStereo;
@@ -480,11 +507,9 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
         return false;
     }
 
-    // Activate buses
-    int32_t in_bus_count  = p.component->getBusCount(vst::kAudio, vst::kInput);
-    int32_t out_bus_count = p.component->getBusCount(vst::kAudio, vst::kOutput);
-    if (in_bus_count > 0)  p.component->activateBus(vst::kAudio, vst::kInput,  0, true);
-    if (out_bus_count > 0) p.component->activateBus(vst::kAudio, vst::kOutput, 0, true);
+    // Activate the main buses only; sidechain / aux buses stay inactive.
+    p.component->activateBus(vst::kAudio, vst::kInput,  0, true);
+    p.component->activateBus(vst::kAudio, vst::kOutput, 0, true);
 
     if (p.component->setActive(true) != kResultOk) {
         *status_out = ZVST_ACTIVATE_FAILED;
@@ -506,12 +531,48 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     const int32_t pch = p.plugin_channels;
     p.in_buffer_ptrs.assign(static_cast<size_t>(pch), nullptr);
     p.out_buffer_ptrs.assign(static_cast<size_t>(pch), nullptr);
-    p.in_bus.numChannels  = pch;
-    p.out_bus.numChannels = pch;
-    p.in_bus.channelBuffers32  = p.in_buffer_ptrs.data();
-    p.out_bus.channelBuffers32 = p.out_buffer_ptrs.data();
-    p.in_bus.silenceFlags = 0;
-    p.out_bus.silenceFlags = 0;
+
+    // Aux buses: read back the arrangement each settled on and point every
+    // aux channel at shared scratch — silence in, discard out. Sized once
+    // here so the realtime path never allocates.
+    auto bus_channels = [&](vst::BusDirection dir, int32 i) -> int32 {
+        vst::SpeakerArrangement a = 0;
+        p.processor->getBusArrangement(dir, i, a);
+        return vst::SpeakerArr::getChannelCount(a);
+    };
+    std::vector<int32> aux_in_ch, aux_out_ch;
+    size_t aux_in_total = 0, aux_out_total = 0;
+    for (int32 i = 1; i < in_bus_count; i++) {
+        aux_in_ch.push_back(bus_channels(vst::kInput, i));
+        aux_in_total += static_cast<size_t>(aux_in_ch.back());
+    }
+    for (int32 i = 1; i < out_bus_count; i++) {
+        aux_out_ch.push_back(bus_channels(vst::kOutput, i));
+        aux_out_total += static_cast<size_t>(aux_out_ch.back());
+    }
+    if (aux_in_total > 0)  p.aux_silence.assign(static_cast<size_t>(p.block_size), 0.0f);
+    if (aux_out_total > 0) p.aux_discard.assign(static_cast<size_t>(p.block_size), 0.0f);
+    p.aux_in_ptrs.assign(aux_in_total, p.aux_silence.empty() ? nullptr : p.aux_silence.data());
+    p.aux_out_ptrs.assign(aux_out_total, p.aux_discard.empty() ? nullptr : p.aux_discard.data());
+
+    p.in_buses.assign(static_cast<size_t>(in_bus_count), vst::AudioBusBuffers{});
+    p.out_buses.assign(static_cast<size_t>(out_bus_count), vst::AudioBusBuffers{});
+    p.in_buses[0].numChannels  = pch;
+    p.out_buses[0].numChannels = pch;
+    p.in_buses[0].channelBuffers32  = p.in_buffer_ptrs.data();
+    p.out_buses[0].channelBuffers32 = p.out_buffer_ptrs.data();
+    size_t off = 0;
+    for (size_t i = 0; i < aux_in_ch.size(); i++) {
+        p.in_buses[i + 1].numChannels = aux_in_ch[i];
+        p.in_buses[i + 1].channelBuffers32 = p.aux_in_ptrs.data() + off;
+        off += static_cast<size_t>(aux_in_ch[i]);
+    }
+    off = 0;
+    for (size_t i = 0; i < aux_out_ch.size(); i++) {
+        p.out_buses[i + 1].numChannels = aux_out_ch[i];
+        p.out_buses[i + 1].channelBuffers32 = p.aux_out_ptrs.data() + off;
+        off += static_cast<size_t>(aux_out_ch[i]);
+    }
 
     if (pch != p.channels) {
         // Private planar staging for the plug-in's view, so the realtime path
@@ -524,10 +585,10 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     p.process_data.processMode = vst::kRealtime;
     p.process_data.symbolicSampleSize = vst::kSample32;
     p.process_data.numSamples = 0; // set per call
-    p.process_data.numInputs  = (in_bus_count  > 0) ? 1 : 0;
-    p.process_data.numOutputs = (out_bus_count > 0) ? 1 : 0;
-    p.process_data.inputs  = (in_bus_count  > 0) ? &p.in_bus  : nullptr;
-    p.process_data.outputs = (out_bus_count > 0) ? &p.out_bus : nullptr;
+    p.process_data.numInputs  = in_bus_count;
+    p.process_data.numOutputs = out_bus_count;
+    p.process_data.inputs  = p.in_buses.data();
+    p.process_data.outputs = p.out_buses.data();
     p.process_data.inputParameterChanges = &p.input_changes;
     // A spec-compliant host always supplies an output queue too; some plug-ins
     // (e.g. DPF-based) assert/refuse when it is null. Cleared every block.
@@ -1215,6 +1276,10 @@ int32_t zvst_process(
         p->out_buffer_ptrs[0] = p->plugin_out_scratch.data();
     }
     p->process_data.numSamples = frames;
+    // Aux (sidechain) inputs must read as silence; a plug-in is allowed to
+    // treat its input buffers as scratch, so re-zero before every block.
+    if (!p->aux_silence.empty())
+        std::memset(p->aux_silence.data(), 0, n * sizeof(float));
 
     // Drain GUI / control-thread parameter edits into the processor's
     // input changes for this block. try_lock so the realtime thread NEVER

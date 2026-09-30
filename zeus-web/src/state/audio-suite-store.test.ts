@@ -849,6 +849,38 @@ describe('audio-suite-store platform affordance', () => {
     expect(useAudioSuiteStore.getState().auSupported).toBe(false);
   });
 
+  it('takes the default VST3 scan folders from the server', async () => {
+    const dirs = ['/Library/Audio/Plug-Ins/VST3', '/Users/op/Library/Audio/Plug-Ins/VST3'];
+    const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/tx-audio-suite/vst-engine/install') {
+        return response({ engineSupported: false, auSupported: true, defaultVst3Dirs: dirs });
+      }
+      return response({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAudioSuiteStore.getState().loadEngineSupportFromServer();
+
+    expect(useAudioSuiteStore.getState().defaultVst3Dirs).toEqual(dirs);
+  });
+
+  it('keeps the Windows VST3 folders when the server does not report any', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/tx-audio-suite/vst-engine/install') {
+        return response({ engineSupported: true, auSupported: false, defaultVst3Dirs: [] });
+      }
+      return response({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await useAudioSuiteStore.getState().loadEngineSupportFromServer();
+
+    expect(useAudioSuiteStore.getState().defaultVst3Dirs).toEqual([
+      'C:\\Program Files\\Common Files\\VST3',
+      'C:\\VST PLUGINS',
+    ]);
+  });
+
   it('defaults to the engine-supported shape before the DTO loads', () => {
     const state = useAudioSuiteStore.getState();
     expect(state.engineSupported).toBe(true);
