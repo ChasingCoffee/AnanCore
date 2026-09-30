@@ -18,11 +18,11 @@ $stagedDir = Join-Path $repoRoot "Zeus.Plugins.Host\runtimes\$rid\native"
 $builtDll = Join-Path $buildDir "$Configuration\zeus-vst-bridge.dll"
 
 if ($InitSubmodules) {
-    git -C $repoRoot submodule update --init native/zeus-vst-bridge/third_party/vst3sdk
+    git -C $repoRoot submodule update --init native/zeus-vst-bridge/third_party/vst3sdk native/zeus-vst-bridge/third_party/clap
     git -C (Join-Path $bridgeRoot "third_party\vst3sdk") submodule update --init base pluginterfaces public.sdk cmake
 }
 
-cmake -S $bridgeRoot -B $buildDir -G "Visual Studio 17 2022" -A $cmakeArch
+cmake -S $bridgeRoot -B $buildDir -G "Visual Studio 17 2022" -A $cmakeArch -DZEUS_VST_REQUIRE_SDK=ON -DZEUS_VST_BUILD_TEST_PLUGIN=OFF
 cmake --build $buildDir --config $Configuration --parallel
 
 if (-not (Test-Path -LiteralPath $builtDll -PathType Leaf)) {

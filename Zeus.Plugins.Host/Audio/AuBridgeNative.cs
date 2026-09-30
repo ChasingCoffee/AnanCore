@@ -143,6 +143,34 @@ public sealed partial class AuBridgeNative : IVstBridgeNative
         catch (EntryPointNotFoundException) { return false; }
     }
 
+    // State + latency (ABI v3). An older dylib lacks the entry points, so the
+    // calls degrade to NotImplemented / 0 like the editor calls above.
+    public int GetState(nint handle, out byte[] state)
+    {
+        state = [];
+        try { return NativeState.Read((byte[]? buf, int cap, out int len) => zau_get_state(handle, buf, cap, out len), out state); }
+        catch (DllNotFoundException) { return VstBridgeStatus.NotImplemented; }
+        catch (EntryPointNotFoundException) { return VstBridgeStatus.NotImplemented; }
+    }
+
+    public unsafe int SetState(nint handle, ReadOnlySpan<byte> state)
+    {
+        try
+        {
+            fixed (byte* p = state)
+                return zau_set_state(handle, p, state.Length);
+        }
+        catch (DllNotFoundException) { return VstBridgeStatus.NotImplemented; }
+        catch (EntryPointNotFoundException) { return VstBridgeStatus.NotImplemented; }
+    }
+
+    public int GetLatencySamples(nint handle)
+    {
+        try { return zau_get_latency_samples(handle); }
+        catch (DllNotFoundException) { return 0; }
+        catch (EntryPointNotFoundException) { return 0; }
+    }
+
     // --- P/Invoke imports ---------------------------------------------------
 
     [LibraryImport(LibraryName, EntryPoint = "zau_init")]
@@ -174,6 +202,15 @@ public sealed partial class AuBridgeNative : IVstBridgeNative
 
     [LibraryImport(LibraryName, EntryPoint = "zau_editor_is_open")]
     private static partial int zau_editor_is_open(nint handle);
+
+    [LibraryImport(LibraryName, EntryPoint = "zau_get_state")]
+    private static partial int zau_get_state(nint handle, [Out] byte[]? outBuf, int cap, out int outLen);
+
+    [LibraryImport(LibraryName, EntryPoint = "zau_set_state")]
+    private static unsafe partial int zau_set_state(nint handle, byte* data, int len);
+
+    [LibraryImport(LibraryName, EntryPoint = "zau_get_latency_samples")]
+    private static partial int zau_get_latency_samples(nint handle);
 }
 
 /// <summary>
@@ -185,5 +222,6 @@ public static class AuBridgeAbi
 {
     // v1: init / load / process / set_param / unload / shutdown.
     // v2: + editor hosting (zau_editor_open / zau_editor_close / zau_editor_is_open).
-    public const int Current = 2;
+    // v3: + zau_get_state / zau_set_state / zau_get_latency_samples.
+    public const int Current = 3;
 }

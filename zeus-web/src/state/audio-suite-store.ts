@@ -265,6 +265,12 @@ interface AudioSuiteState {
   loadPreviewState(): Promise<void>;
   setPreviewEnabled(enabled: boolean, meterOnly?: boolean): Promise<void>;
 
+  // Per-plugin bypass: a bypassed plugin stays loaded and in its chain slot
+  // but passes audio through. Server-authoritative, shared by both suites.
+  bypassedPluginIds: string[];
+  loadPluginBypassFromServer(): Promise<void>;
+  setPluginBypassed(route: AudioSuiteRoute, pluginId: string, bypassed: boolean): Promise<void>;
+
   // Master bypass plumbing.
   setMasterBypassedFromServer(bypassed: boolean): void;
   setRxMasterBypassedFromServer(bypassed: boolean): void;
@@ -331,11 +337,14 @@ interface AudioSuiteState {
   //                            on macOS) host plugins without any engine
   //                            download. True on every platform.
   //   auSupported            — Audio Units can be scanned/hosted (macOS only).
+  //   defaultPluginDirs      — the standard plug-in folders (VST3 + CLAP) on
+  //                            the server's OS, swept by the one-click scan.
   // engineSupportLoaded gates first-paint so the panel doesn't flash the
   // wrong affordance before the DTO arrives.
   engineSupported: boolean;
   inProcessHostSupported: boolean;
   auSupported: boolean;
+  defaultPluginDirs: string[];
   engineSupportLoaded: boolean;
   loadEngineSupportFromServer(): Promise<void>;
 }
@@ -369,6 +378,16 @@ type AudioSuitePersistedState = Pick<
 >;
 
 // Default window placement — top-left quadrant, room for plugin panels.
+// Fallback scan folders when the server reports none — the Windows VST3 set
+// Zeus has always swept.
+const WINDOWS_VST3_DIRS = ['C:\\Program Files\\Common Files\\VST3', 'C:\\VST PLUGINS'];
+
+function normalizeDirList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const dirs = value.filter((d): d is string => typeof d === 'string' && d.trim().length > 0);
+  return dirs.length > 0 ? dirs : null;
+}
+
 const DEFAULT_X = 80;
 const DEFAULT_Y = 80;
 const DEFAULT_WIDTH = 860;
@@ -415,6 +434,7 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
       // value (if any) and any WS broadcast keeps it in sync after.
       masterBypassed: true,
       rxMasterBypassed: true,
+      bypassedPluginIds: [],
       processingMode: 'native',
       vstEngineAvailable: false,
       vstEngineActive: false,
@@ -431,6 +451,7 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
       engineSupported: true,
       inProcessHostSupported: true,
       auSupported: false,
+      defaultPluginDirs: WINDOWS_VST3_DIRS,
       engineSupportLoaded: false,
       isDragging: false,
       collapsed: {},
@@ -615,6 +636,54 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
           set({ chainOrder: prev });
 
           console.warn('audio-suite chain-membership PUT threw', err);
+        }
+      },
+
+      loadPluginBypassFromServer: async () => {
+        try {
+          const res = await fetch('/api/tx-audio-suite/plugins/bypass');
+          if (!res.ok) return;
+          const body = (await res.json()) as { pluginIds?: unknown };
+          if (Array.isArray(body.pluginIds)) {
+            set({
+              bypassedPluginIds: body.pluginIds.filter((id): id is string => typeof id === 'string'),
+            });
+          }
+        } catch (err) {
+          console.warn('audio-suite plugin bypass GET threw', err);
+        }
+      },
+
+      setPluginBypassed: async (route, pluginId, bypassed) => {
+        const prev = get().bypassedPluginIds;
+        set({
+          bypassedPluginIds: bypassed
+            ? [...prev.filter((id) => id !== pluginId), pluginId]
+            : prev.filter((id) => id !== pluginId),
+        });
+        try {
+          const res = await fetch(
+            `/api/${route}-audio-suite/plugins/${encodeURIComponent(pluginId)}/bypass`,
+            {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ bypassed }),
+            },
+          );
+          if (!res.ok) {
+            set({ bypassedPluginIds: prev });
+            console.warn(`audio-suite plugin bypass PUT rejected: ${res.status} ${res.statusText}`);
+            return;
+          }
+          const body = (await res.json()) as { pluginIds?: unknown };
+          if (Array.isArray(body.pluginIds)) {
+            set({
+              bypassedPluginIds: body.pluginIds.filter((id): id is string => typeof id === 'string'),
+            });
+          }
+        } catch (err) {
+          set({ bypassedPluginIds: prev });
+          console.warn('audio-suite plugin bypass PUT threw', err);
         }
       },
 
@@ -1416,11 +1485,17 @@ export const useAudioSuiteStore = create<AudioSuiteState>()(
             engineSupported?: boolean;
             inProcessHostSupported?: boolean;
             auSupported?: boolean;
+            defaultVst3Dirs?: unknown;
+            defaultPluginDirs?: unknown;
           };
           set({
             engineSupported: body.engineSupported !== false,
             inProcessHostSupported: body.inProcessHostSupported !== false,
             auSupported: body.auSupported === true,
+            defaultPluginDirs:
+              normalizeDirList(body.defaultPluginDirs) ??
+              normalizeDirList(body.defaultVst3Dirs) ??
+              WINDOWS_VST3_DIRS,
             engineSupportLoaded: true,
           });
         } catch (err) {

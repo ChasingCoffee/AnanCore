@@ -53,6 +53,9 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
     // that never loads an AU pays nothing (and on non-macOS the AU dylib is
     // simply absent → AuBridgeNative degrades to passthrough).
     private IVstBridgeNative? _auBridge;
+    // Third backend: CLAP plug-ins (audio.format == "clap"), same native
+    // library as the VST3 host, created on first use.
+    private IVstBridgeNative? _clapBridge;
     private readonly Func<bool> _isMoxOn;
     private readonly Func<bool> _isMonitorOn;
     private readonly Func<bool> _isTciTxAudioActive;
@@ -65,6 +68,20 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
     // when false the engine is never touched and TX is byte-identical to native.
     private readonly VstEngineController? _vstEngine;
     private readonly ILogger<AudioPluginBridge> _log;
+    // Where hosted VST3 / AU plugins keep their settings between sessions.
+    // Null in tests that don't exercise persistence.
+    private readonly IPluginStateStore? _stateStore;
+    // Vets a plugin in a probe process before its first in-process load.
+    private readonly IPluginLoadGuard? _loadGuard;
+    // While a plugin's editor is open the operator is changing it: save any
+    // change every few seconds so a crash or power cut loses little.
+    private const int StateAutosaveIntervalMs = 2000;
+    private System.Threading.Timer? _stateAutosaveTimer;
+    // Per-plugin bypass: the plugin stays loaded and slotted but its slot is
+    // skipped (bit-identical pass-through). Keyed by id so it survives every
+    // re-slot; guarded by _lock.
+    private readonly IPluginBypassStore? _bypassStore;
+    private readonly HashSet<string> _bypassedIds = new(StringComparer.Ordinal);
     private readonly AudioChain _chain = new();
     private readonly Dictionary<string, int> _idToSlot = new();
     private readonly Dictionary<string, IAudioPlugin> _idToPlugin = new();
@@ -166,7 +183,9 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
         ILogger<AudioPluginBridge> log,
         TxAudioIngest txAudioIngest,
         RxVstEngineService rxVstEngine,
-        VstEngineController vstEngine)
+        VstEngineController vstEngine,
+        AudioPluginStateStore stateStore,
+        IPluginLoadGuard loadGuard)
         : this(manager, pipeline, new VstBridgeNative(),
                isMoxOn: () => tx.IsMoxOn,
                isMonitorOn: () => pipeline.CurrentEngine?.IsTxMonitorOn ?? false,
@@ -176,7 +195,9 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
                log,
                isTciTxAudioActive: () => txAudioIngest.IsTciTxAudioActive,
                rxVstEngine: rxVstEngine,
-               vstEngine: vstEngine) { }
+               vstEngine: vstEngine,
+               stateStore: stateStore,
+               loadGuard: loadGuard) { }
 
     // Testable ctor — lets unit tests inject a fake IVstBridgeNative and
     // plain delegates for the MOX / monitor lookups so tests don't need
@@ -194,8 +215,16 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
         Func<bool>? isTciTxAudioActive = null,
         RxVstEngineService? rxVstEngine = null,
         VstEngineController? vstEngine = null,
-        IVstBridgeNative? auBridge = null)
+        IVstBridgeNative? auBridge = null,
+        IPluginStateStore? stateStore = null,
+        IPluginBypassStore? bypassStore = null,
+        IPluginLoadGuard? loadGuard = null)
     {
+        _stateStore = stateStore;
+        _loadGuard = loadGuard;
+        _bypassStore = bypassStore ?? stateStore as IPluginBypassStore;
+        if (_bypassStore is not null)
+            foreach (var id in _bypassStore.GetBypassedIds()) _bypassedIds.Add(id);
         _manager = manager;
         _pipeline = pipeline;
         _vstBridge = vstBridge;
@@ -465,14 +494,140 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
                 _ => LivenessTick(), null, LivenessIntervalMs, LivenessIntervalMs);
         }
 
+        if (_stateStore is not null)
+            _stateAutosaveTimer = new System.Threading.Timer(
+                _ => AutosaveOpenEditors(), null, StateAutosaveIntervalMs, StateAutosaveIntervalMs);
+
         _log.LogInformation("AudioPluginBridge online.");
         return Task.CompletedTask;
+    }
+
+    /// <summary>Plugin ids the operator has bypassed (TX and RX).</summary>
+    public IReadOnlyCollection<string> BypassedPluginIds
+    {
+        get { lock (_lock) return _bypassedIds.ToArray(); }
+    }
+
+    /// <summary>
+    /// Bypass (or re-engage) one plugin. A bypassed plugin stays loaded and in
+    /// its chain position, but its slot passes audio through untouched; the
+    /// choice persists. Returns false for an id the bridge doesn't host.
+    /// </summary>
+    public bool SetPluginBypassed(string pluginId, bool bypassed)
+    {
+        lock (_lock)
+        {
+            if (!_idToPlugin.ContainsKey(pluginId) && !_rxIdToPlugin.ContainsKey(pluginId)) return false;
+            if (bypassed) _bypassedIds.Add(pluginId); else _bypassedIds.Remove(pluginId);
+            if (_idToSlot.TryGetValue(pluginId, out var slot)) _chain.SetSlotBypass(slot, bypassed);
+            if (_rxIdToSlot.TryGetValue(pluginId, out var rxSlot)) _rxChain.SetSlotBypass(rxSlot, bypassed);
+        }
+        _bypassStore?.SetBypassed(pluginId, bypassed);
+        _log.LogInformation("Audio plugin {Id} {State}.", pluginId, bypassed ? "bypassed" : "re-engaged");
+        return true;
+    }
+
+    // Every hosted VST3 / AU plugin instance (TX and RX), loaded or not.
+    private List<(string Id, VstHostAudioPlugin Plugin)> HostedPlugins()
+    {
+        lock (_lock)
+        {
+            var list = new List<(string, VstHostAudioPlugin)>();
+            foreach (var kv in _idToPlugin)
+                if (kv.Value is VstHostAudioPlugin v) list.Add((kv.Key, v));
+            foreach (var kv in _rxIdToPlugin)
+                if (kv.Value is VstHostAudioPlugin v) list.Add((kv.Key, v));
+            return list;
+        }
+    }
+
+    private int _autosaveRunning;
+    // Editors seen open on the previous tick: one the operator has since closed
+    // with the window's own close button gets a final save.
+    private HashSet<string> _editorsOpenLastTick = new(StringComparer.Ordinal);
+
+    private void AutosaveOpenEditors()
+    {
+        if (Interlocked.Exchange(ref _autosaveRunning, 1) == 1) return; // a slow save is still going
+        try
+        {
+            var openNow = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (id, plugin) in HostedPlugins())
+            {
+                try
+                {
+                    if (!plugin.IsNativelyLoaded) continue;
+                    var open = plugin.IsEditorOpen;
+                    if (open) openNow.Add(id);
+                    if ((open || _editorsOpenLastTick.Contains(id)) && plugin.SaveStateIfChanged())
+                        _log.LogDebug("Saved settings for plugin {Id}.", id);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Autosave of plugin {Id} settings failed.", id);
+                }
+            }
+            _editorsOpenLastTick = openNow;
+        }
+        finally
+        {
+            Volatile.Write(ref _autosaveRunning, 0);
+        }
+    }
+
+    /// <summary>
+    /// The current native state of each natively loaded plugin among
+    /// <paramref name="pluginIds"/>, base64-encoded (the TX profile format).
+    /// </summary>
+    public Dictionary<string, string> CaptureHostedPluginStates(IEnumerable<string> pluginIds)
+    {
+        var wanted = new HashSet<string>(pluginIds, StringComparer.Ordinal);
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (id, plugin) in HostedPlugins())
+        {
+            if (!wanted.Contains(id)) continue;
+            var state = plugin.CaptureState();
+            if (state is { Length: > 0 }) result[id] = Convert.ToBase64String(state);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Apply profile states (base64) to the hosted plugins they name: a loaded
+    /// plugin takes it at once, an unloaded one on its next load. Unknown ids
+    /// and undecodable entries are skipped. Returns how many were applied.
+    /// </summary>
+    public int RestoreHostedPluginStates(IReadOnlyDictionary<string, string> states)
+    {
+        int applied = 0;
+        foreach (var (id, plugin) in HostedPlugins())
+        {
+            if (!states.TryGetValue(id, out var b64) || string.IsNullOrEmpty(b64)) continue;
+            byte[] blob;
+            try { blob = Convert.FromBase64String(b64); }
+            catch (FormatException) { continue; }
+            if (plugin.RestoreState(blob)) applied++;
+            else _log.LogWarning("Plugin {Id} refused the profile's saved settings.", id);
+        }
+        return applied;
     }
 
     public Task StopAsync(CancellationToken ct)
     {
         _livenessTimer?.Dispose();
         _livenessTimer = null;
+
+        if (_stateAutosaveTimer is not null)
+        {
+            _stateAutosaveTimer.Dispose();
+            _stateAutosaveTimer = null;
+            // Keep whatever the operator changed since the last save.
+            foreach (var (id, plugin) in HostedPlugins())
+            {
+                try { plugin.SaveStateIfChanged(); }
+                catch (Exception ex) { _log.LogWarning(ex, "Saving plugin {Id} settings at shutdown failed.", id); }
+            }
+        }
 
         _manager.PluginActivated   -= OnPluginActivated;
         _manager.PluginDeactivated -= OnPluginDeactivated;
@@ -980,6 +1135,7 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
                 _idToSlot[p.Loaded.Manifest.Id] = slot;
                 _idToPlugin[p.Loaded.Manifest.Id] = audioPlugin;
                 _chain.SetSlot(slot, audioPlugin);
+                if (_bypassedIds.Contains(p.Loaded.Manifest.Id)) _chain.SetSlotBypass(slot, true);
             }
         }
 
@@ -1242,6 +1398,7 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
             }
             _rxIdToSlot[id] = slot;
             _rxChain.SetSlot(slot, plugin);
+            if (_bypassedIds.Contains(id)) _rxChain.SetSlotBypass(slot, true);
             slot++;
         }
         return slot > 0;
@@ -1352,18 +1509,24 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
         // bridge keyed by vst3Path. The VST3 path is unchanged; AU is purely
         // additive (3-way dispatch).
         bool isAu = string.Equals(audio.Format, "au", StringComparison.OrdinalIgnoreCase);
+        bool isClap = string.Equals(audio.Format, "clap", StringComparison.OrdinalIgnoreCase);
         bool hasIdentity = isAu
             ? audio.AuComponentId is { Length: > 0 }
             : audio.Vst3Path is { Length: > 0 };
         if (!hasIdentity) return null;
 
-        var bridge = isAu ? (_auBridge ??= new AuBridgeNative()) : _vstBridge;
+        var bridge = isAu ? (_auBridge ??= new AuBridgeNative())
+            : isClap ? (_clapBridge ??= new ClapBridgeNative())
+            : _vstBridge;
         return new VstHostAudioPlugin(
             bridge: bridge,
             manifestAudio: audio,
             pluginRootPath: p.Loaded.PluginDir,
             displayName: p.Loaded.Manifest.Name,
-            log: _log);
+            log: _log,
+            pluginId: p.Loaded.Manifest.Id,
+            stateStore: _stateStore,
+            loadGuard: _loadGuard);
     }
 
     private int FindFreeSlot()
@@ -1619,6 +1782,7 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
             var id = canonical[i];
             if (!_idToPlugin.TryGetValue(id, out var plugin)) continue;
             _chain.SetSlot(slotIndex, plugin);
+            if (_bypassedIds.Contains(id)) _chain.SetSlotBypass(slotIndex, true);
             _idToSlot[id] = slotIndex;
             slotIndex++;
         }
@@ -1639,6 +1803,7 @@ public sealed class AudioPluginBridge : IHostedService, IAsyncDisposable
                 continue;
             }
             _chain.SetSlot(slotIndex, kvp.Value);
+            if (_bypassedIds.Contains(kvp.Key)) _chain.SetSlotBypass(slotIndex, true);
             _idToSlot[kvp.Key] = slotIndex;
             slotIndex++;
         }

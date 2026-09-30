@@ -226,6 +226,27 @@ AD1C's country file from <https://www.country-files.com/>, used under its MIT
 licence (`Dxcc/LICENSE.cty`). Refresh it from the same site when entities or
 prefixes change.
 
+## Steinberg VST 3 SDK (plug-in hosting)
+
+The in-process VST3 host (`native/zeus-vst-bridge`) compiles the hosting
+subset of Steinberg's **VST 3 SDK** (`base`, `pluginterfaces`, `public.sdk`),
+vendored as a git submodule at `native/zeus-vst-bridge/third_party/vst3sdk`
+and pinned to a release tag. **Copyright © Steinberg Media Technologies GmbH**,
+distributed under the **MIT License** (`third_party/vst3sdk/LICENSE.txt`),
+which is compatible with Zeus's GPL-2.0-or-later distribution. The bridge
+sources themselves and the test plug-in under `test-plugin/` are original Zeus
+work. VST is a trademark of Steinberg Media Technologies GmbH.
+
+## CLAP SDK (plug-in hosting)
+
+The CLAP host in the same library (`native/zeus-vst-bridge/src/clap_bridge.cpp`)
+compiles against the header-only **CLAP SDK**, vendored as a git submodule at
+`native/zeus-vst-bridge/third_party/clap` and pinned to a release tag.
+**Copyright © Alexandre Bique and the CLAP contributors**, distributed under
+the **MIT License** (`third_party/clap/LICENSE`), compatible with Zeus's
+GPL-2.0-or-later distribution. The host and the test plug-in are original
+Zeus work.
+
 ## ft8_lib, KISS FFT and wsprd (ported to C#)
 
 The FT8/FT4 and WSPR modes run on managed C# ports of their reference C

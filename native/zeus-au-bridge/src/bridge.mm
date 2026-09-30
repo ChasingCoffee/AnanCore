@@ -42,6 +42,7 @@
 #endif
 
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -140,6 +141,10 @@ struct LoadedAu {
     // like AULowpass is unaffected. Owned by the realtime thread; the AU
     // serialises process/unload via the handle so no atomics are needed.
     Float64 render_sample_time{0.0};
+
+    // Held by zau_set_state while the AU's ClassInfo is replaced; zau_process
+    // only try_locks it and passes the block through when it can't.
+    std::mutex state_mtx;
 
 #if defined(__APPLE__)
     // --- Editor state. Touched ONLY on the main thread (where all AppKit
@@ -640,6 +645,16 @@ int32_t zau_process(
     auto* p = static_cast<LoadedAu*>(handle);
     if (frames < 1 || frames > p->block_size) return ZAU_INVALID_ARGUMENTS;
 
+    // A state restore is replacing the AU's preset: pass this block through
+    // rather than wait (the realtime path never blocks).
+    std::unique_lock<std::mutex> state_lk(p->state_mtx, std::try_to_lock);
+    if (!state_lk.owns_lock()) {
+        if (output != input)
+            std::memmove(output, input,
+                static_cast<size_t>(p->channels) * static_cast<size_t>(frames) * sizeof(float));
+        return ZAU_OK;
+    }
+
     // Stage the caller's input for the render callback to hand to the AU.
     p->current_input  = input;
     p->current_frames = frames;
@@ -760,6 +775,70 @@ int32_t zau_unload(zau_handle_t handle) {
     teardown(*p);
     delete p;
     return ZAU_OK;
+}
+
+int32_t zau_get_state(zau_handle_t handle, uint8_t* out_buf, int32_t cap, int32_t* out_len) {
+    if (out_len) *out_len = 0;
+    if (!handle) return ZAU_INVALID_HANDLE;
+    if (cap < 0 || (cap > 0 && !out_buf)) return ZAU_INVALID_ARGUMENTS;
+    auto* p = static_cast<LoadedAu*>(handle);
+    CFPropertyListRef plist = nullptr;
+    UInt32 sz = sizeof(plist);
+    OSStatus st = AudioUnitGetProperty(p->unit, kAudioUnitProperty_ClassInfo,
+                                       kAudioUnitScope_Global, 0, &plist, &sz);
+    if (st != noErr || !plist) return ZAU_OTHER;
+    CFDataRef data = CFPropertyListCreateData(kCFAllocatorDefault, plist,
+                                              kCFPropertyListBinaryFormat_v1_0, 0, nullptr);
+    CFRelease(plist);
+    if (!data) return ZAU_OTHER;
+    const CFIndex n = CFDataGetLength(data);
+    if (n > INT32_MAX) { CFRelease(data); return ZAU_OTHER; }
+    if (out_len) *out_len = static_cast<int32_t>(n);
+    int32_t result = ZAU_OK;
+    if (n > cap) result = ZAU_BUFFER_TOO_SMALL;
+    else if (n > 0) std::memcpy(out_buf, CFDataGetBytePtr(data), static_cast<size_t>(n));
+    CFRelease(data);
+    return result;
+}
+
+int32_t zau_set_state(zau_handle_t handle, const uint8_t* bytes, int32_t len) {
+    if (!handle) return ZAU_INVALID_HANDLE;
+    if (!bytes || len <= 0) return ZAU_INVALID_ARGUMENTS;
+    auto* p = static_cast<LoadedAu*>(handle);
+    CFDataRef data = CFDataCreate(kCFAllocatorDefault, bytes, len);
+    if (!data) return ZAU_OTHER;
+    CFPropertyListRef plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
+                                  kCFPropertyListImmutable, nullptr, nullptr);
+    CFRelease(data);
+    if (!plist || CFGetTypeID(plist) != CFDictionaryGetTypeID()) {
+        if (plist) CFRelease(plist);
+        return ZAU_INVALID_ARGUMENTS;
+    }
+    OSStatus st;
+    {
+        std::lock_guard<std::mutex> lk(p->state_mtx);
+        st = AudioUnitSetProperty(p->unit, kAudioUnitProperty_ClassInfo,
+                                  kAudioUnitScope_Global, 0, &plist, sizeof(plist));
+    }
+    CFRelease(plist);
+    if (st != noErr) return ZAU_OTHER;
+    // Tell any open view (and other listeners) every parameter may have moved.
+    AudioUnitParameter changed{};
+    changed.mAudioUnit   = p->unit;
+    changed.mParameterID = kAUParameterListener_AnyParameter;
+    AUParameterListenerNotify(nullptr, nullptr, &changed);
+    return ZAU_OK;
+}
+
+int32_t zau_get_latency_samples(zau_handle_t handle) {
+    if (!handle) return 0;
+    auto* p = static_cast<LoadedAu*>(handle);
+    Float64 seconds = 0;
+    UInt32 sz = sizeof(seconds);
+    if (AudioUnitGetProperty(p->unit, kAudioUnitProperty_Latency, kAudioUnitScope_Global, 0,
+                             &seconds, &sz) != noErr || !(seconds > 0))
+        return 0;
+    return static_cast<int32_t>(seconds * p->sample_rate + 0.5);
 }
 
 int32_t zau_shutdown(void) {

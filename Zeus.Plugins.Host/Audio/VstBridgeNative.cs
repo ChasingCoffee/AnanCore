@@ -53,6 +53,19 @@ public sealed partial class VstBridgeNative : IVstBridgeNative
 
     public int GetLatencySamples(nint handle) => zvst_get_latency_samples(handle);
 
+    public int LoadVst3Class(string path, string? classUid, int channels, int sampleRate, int blockSize, out nint handle)
+        => zvst_load_vst3_class(path, string.IsNullOrEmpty(classUid) ? null : classUid,
+                                channels, sampleRate, blockSize, out handle);
+
+    public int GetState(nint handle, out byte[] state) =>
+        NativeState.Read((byte[]? buf, int cap, out int len) => zvst_get_state(handle, buf, cap, out len), out state);
+
+    public unsafe int SetState(nint handle, ReadOnlySpan<byte> state)
+    {
+        fixed (byte* p = state)
+            return zvst_set_state(handle, p, state.Length);
+    }
+
     public int EditorOpen(nint handle, string title) => zvst_editor_open(handle, title);
 
     public int EditorClose(nint handle) => zvst_editor_close(handle);
@@ -135,4 +148,39 @@ public sealed partial class VstBridgeNative : IVstBridgeNative
 
     [LibraryImport(LibraryName, EntryPoint = "zvst_describe", StringMarshalling = StringMarshalling.Utf8)]
     private static partial int zvst_describe(string path, [Out] byte[] outJson, int outCap, out int outLen);
+
+    [LibraryImport(LibraryName, EntryPoint = "zvst_load_vst3_class", StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int zvst_load_vst3_class(string path, string? classUid, int channels, int sampleRate, int blockSize, out nint handle);
+
+    [LibraryImport(LibraryName, EntryPoint = "zvst_get_state")]
+    private static partial int zvst_get_state(nint handle, [Out] byte[]? outBuf, int cap, out int outLen);
+
+    [LibraryImport(LibraryName, EntryPoint = "zvst_set_state")]
+    private static unsafe partial int zvst_set_state(nint handle, byte* data, int len);
+}
+
+/// <summary>
+/// Shared "size, then fill" read for the native get-state calls: try a
+/// buffer, and when the bridge answers <see cref="VstBridgeStatus.BufferTooSmall"/>
+/// with the size it needs, retry once at exactly that size.
+/// </summary>
+internal static class NativeState
+{
+    internal delegate int Reader(byte[]? buffer, int cap, out int len);
+
+    internal static int Read(Reader read, out byte[] state)
+    {
+        state = [];
+        var buf = new byte[64 * 1024];
+        int status = read(buf, buf.Length, out int len);
+        if (status == VstBridgeStatus.BufferTooSmall && len > buf.Length)
+        {
+            buf = new byte[len];
+            status = read(buf, buf.Length, out len);
+        }
+        if (status != VstBridgeStatus.Ok) return status;
+        if (len < 0 || len > buf.Length) return VstBridgeStatus.Other;
+        state = buf.AsSpan(0, len).ToArray();
+        return VstBridgeStatus.Ok;
+    }
 }
