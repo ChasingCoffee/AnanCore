@@ -49,8 +49,10 @@ extern "C" {
  *     zau_editor_is_open. These host the AU's native Cocoa view (the vendor
  *     GUI, e.g. Waves) with an AUGenericView parameter-editor fallback in a
  *     bridge-owned NSWindow. All existing v1 signatures are unchanged, so the
- *     bump is forward-compatible; the .NET AuBridgeAbi.Current must match. */
-#define ZAU_ABI 2
+ *     bump is forward-compatible; the .NET AuBridgeAbi.Current must match.
+ * v3: additive — zau_get_state / zau_set_state (the AU's ClassInfo preset
+ *     as a binary plist), zau_get_latency_samples, and ZAU_BUFFER_TOO_SMALL. */
+#define ZAU_ABI 3
 
 /* Status codes — must match VstBridgeStatus in C# (shared with the VST3
  * bridge). The names below map onto the same integer values; the AU
@@ -67,6 +69,7 @@ typedef enum zau_status_t {
     ZAU_INVALID_HANDLE        = 6,
     ZAU_INVALID_ARGUMENTS     = 7,
     ZAU_NOT_IMPLEMENTED       = 8,
+    ZAU_BUFFER_TOO_SMALL      = 10, /* *out_len holds the size needed */
     ZAU_OTHER                 = 255
 } zau_status_t;
 
@@ -205,6 +208,22 @@ ZAU_EXPORT int32_t zau_editor_close(zau_handle_t handle);
  * to poll from the .NET control thread; never dispatches or blocks.
  */
 ZAU_EXPORT int32_t zau_editor_is_open(zau_handle_t handle);
+
+/* --- State + latency — ABI v3 ----------------------------------------
+ *
+ * zau_get_state serialises the AU's full state (kAudioUnitProperty_ClassInfo,
+ * the same dictionary .aupreset files hold) as a binary property list into
+ * `out_buf`. *out_len receives the size; when it exceeds `cap` the call
+ * returns ZAU_BUFFER_TOO_SMALL and writes nothing. zau_set_state restores
+ * such a blob; blocks rendered meanwhile pass through unprocessed. Both run
+ * on the control thread, never the audio thread.
+ */
+ZAU_EXPORT int32_t zau_get_state(zau_handle_t handle, uint8_t* out_buf, int32_t cap, int32_t* out_len);
+ZAU_EXPORT int32_t zau_set_state(zau_handle_t handle, const uint8_t* data, int32_t len);
+
+/* The AU's reported processing latency (kAudioUnitProperty_Latency) in
+ * samples at the loaded rate; 0 when none or on a NULL handle. Not a status. */
+ZAU_EXPORT int32_t zau_get_latency_samples(zau_handle_t handle);
 
 #ifdef __cplusplus
 }

@@ -634,17 +634,8 @@ jobs:
           name: wdsp-osx-arm64
           path: Zeus.Dsp/runtimes/osx-arm64/native/
 
-  # ---------- zeus-vst-bridge (in-process VST3 host) ------------------
+  # ---------- zeus-vst-bridge / zeus-au-bridge (plugin hosts) ----------
   #
-  # REMOVED ON THIS FORK. The bridge hosts VST3 plugins via Steinberg's
-  # vst3sdk, vendored upstream as a submodule at
-  # native/zeus-vst-bridge/third_party/vst3sdk — but the fork's history
-  # carries only the .gitmodules record: the gitlink tree entry was
-  # dropped, so `git submodule update --init` fails with "pathspec did
-  # not match any file(s) known to git" on every run, and the three
-  # bridge jobs go red regardless of WDSP health. The bridge is not in
-  # the shipped Pi path (release-appimage never builds it; plugin
-  # engines live in the plugin repo), so the jobs are removed rather
-  # than left masking the real verdict of this workflow. Restoring VST3
-  # hosting = re-add the submodule pinned to an SDK the bridge compiles
-  # against, then bring the jobs back from upstream's copy of this file.
+  # Built by .github/workflows/build-plugin-bridges.yml (every RID, plus a
+  # load test through the in-tree test plug-in) from the vst3sdk submodule at
+  # native/zeus-vst-bridge/third_party/vst3sdk.

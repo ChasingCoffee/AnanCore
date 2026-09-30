@@ -31,6 +31,10 @@
 #include "public.sdk/source/common/memorystream.h"
 
 #include <atomic>
+#include <cstdint>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -39,6 +43,12 @@
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
+
+// macOS: the editor lives in an NSWindow on the main thread, reached through
+// the plain-C++ helpers in mac_ui.h (AppKit code is in mac_ui.mm).
+#if defined(__APPLE__)
+#  include "mac_ui.h"
+#endif
 
 // Editor (IPlugView) hosting: on Windows the plug-in GUI is a native window
 // we create + message-pump on a dedicated thread; on Linux it embeds into an
@@ -96,9 +106,8 @@ std::atomic<int> g_init_count{0};
 struct LoadedPlugin;
 static void zvst_push_param_edit(LoadedPlugin* p, uint32_t param_id, double normalized);
 
-#if defined(_WIN32) || defined(__linux__)
 // ---------------------------------------------------------------------
-// Editor (plug-in GUI) host support — Windows + Linux. The component
+// Editor (plug-in GUI) host support — every platform. The component
 // handler has *inert* reference counting (addRef/release return a
 // constant): its lifetime is owned by us (a member of LoadedPlugin that
 // outlives the view), not the plug-in.
@@ -133,7 +142,6 @@ public:
     Steinberg::uint32 PLUGIN_API addRef() SMTG_OVERRIDE { return 1000; }
     Steinberg::uint32 PLUGIN_API release() SMTG_OVERRIDE { return 1000; }
 };
-#endif // _WIN32 || __linux__
 
 #ifdef _WIN32
 // Per-editor plug frame. Lets the plug-in ask the host to resize its
@@ -249,6 +257,61 @@ public:
 };
 #endif // __linux__
 
+#if defined(__APPLE__)
+// Plug frame for the macOS editor: the plug-in asks the host to resize its
+// window. Main thread only (the view lives there). Inert refcount — owned by
+// LoadedPlugin, outlives the view.
+class ZeusMacPlugFrame : public Steinberg::IPlugFrame {
+public:
+    void* window{nullptr}; // zvst_mac editor window handle
+
+    Steinberg::tresult PLUGIN_API resizeView(Steinberg::IPlugView* view,
+                                             Steinberg::ViewRect* r) SMTG_OVERRIDE {
+        if (!view || !r || !window) return Steinberg::kResultFalse;
+        zvst_mac::editor_window_set_content_size(window, r->getWidth(), r->getHeight());
+        view->onSize(r);
+        return Steinberg::kResultTrue;
+    }
+
+    Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) SMTG_OVERRIDE {
+        if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::FUnknown::iid) ||
+            Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::IPlugFrame::iid)) {
+            *obj = static_cast<Steinberg::IPlugFrame*>(this);
+            return Steinberg::kResultOk;
+        }
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+    Steinberg::uint32 PLUGIN_API addRef() SMTG_OVERRIDE { return 1000; }
+    Steinberg::uint32 PLUGIN_API release() SMTG_OVERRIDE { return 1000; }
+};
+#endif // __APPLE__
+
+// Plug-in output parameter changes (meters, gain-reduction displays) handed
+// from the audio thread to the editor thread, which forwards them to the edit
+// controller so in-editor meters move. Single producer (process), single
+// consumer (the UI thread's drain); drops when full rather than block.
+struct OutParamRing {
+    struct Item { uint32_t id; double value; };
+    static constexpr uint32_t kCap = 512; // power of two
+    Item items[kCap];
+    std::atomic<uint32_t> head{0}; // next write (audio thread)
+    std::atomic<uint32_t> tail{0}; // next read (UI thread)
+
+    void push(uint32_t id, double value) {
+        const uint32_t h = head.load(std::memory_order_relaxed);
+        if (h - tail.load(std::memory_order_acquire) >= kCap) return; // full: drop
+        items[h & (kCap - 1)] = {id, value};
+        head.store(h + 1, std::memory_order_release);
+    }
+    template <typename F> void drain(F&& fn) {
+        uint32_t t = tail.load(std::memory_order_relaxed);
+        const uint32_t h = head.load(std::memory_order_acquire);
+        for (; t != h; ++t) fn(items[t & (kCap - 1)]);
+        tail.store(t, std::memory_order_release);
+    }
+};
+
 // Per-handle state. Owns one IComponent + IAudioProcessor, plus the
 // scratch ProcessData buffers sized at load time so the realtime path
 // doesn't allocate.
@@ -280,8 +343,41 @@ struct LoadedPlugin {
 
     // ProcessData reused across calls. AudioBusBuffers vectors must be
     // stable storage because ProcessData stores raw pointers into them.
-    vst::AudioBusBuffers              in_bus{};
-    vst::AudioBusBuffers              out_bus{};
+    // One entry per audio bus the plug-in declares: index 0 is the main bus
+    // we route the radio audio through; any further buses (sidechain inputs,
+    // aux outputs) are inactive but the VST3 contract still requires a
+    // buffer array per bus sized to its arrangement, so they point at
+    // silent / discard scratch below.
+    std::vector<vst::AudioBusBuffers> in_buses;
+    std::vector<vst::AudioBusBuffers> out_buses;
+    std::vector<float*>               aux_in_ptrs;   // all aux input channels -> aux_silence
+    std::vector<float*>               aux_out_ptrs;  // all aux output channels -> aux_discard
+    std::vector<float>                aux_silence;   // block_size zeros, re-zeroed each block
+    std::vector<float>                aux_discard;   // block_size scratch, ignored
+
+    // 64-bit processing (a plug-in that refuses kSample32). Zeus audio stays
+    // float32 end to end; the bridge converts at the plug-in boundary through
+    // these buffers, all sized at load. Unused (empty) on the 32-bit path.
+    bool                              use64{false};
+    std::vector<double>               in64, out64;         // plugin_channels * block_size
+    std::vector<double*>              in64_ptrs, out64_ptrs;
+    std::vector<double>               aux_silence64, aux_discard64;
+    std::vector<double*>              aux_in_ptrs64, aux_out_ptrs64;
+
+    // Held by zvst_set_state while the processor's state is replaced; the
+    // realtime process() only try_locks it and passes audio through when it
+    // can't get it, so a restore never stalls the audio thread.
+    std::mutex                        state_mtx;
+    // Edit-controller state from zvst_set_state that arrived before the
+    // controller exists (it is created lazily with the editor); applied as
+    // soon as it is. Also returned by zvst_get_state meanwhile, so a restore
+    // that never opened the editor round-trips losslessly.
+    std::vector<uint8_t>              pending_ctrl_state;
+
+    // Audio thread -> UI thread plug-in output parameters (see OutParamRing).
+    // has_controller gates the producer so nothing is queued with no editor.
+    OutParamRing                      out_params;
+    std::atomic<bool>                 has_controller{false};
     vst::ProcessData                  process_data{};
     vst::ProcessSetup                 process_setup{};
     vst::ParameterChanges             input_changes;  // for set_param queueing
@@ -314,6 +410,8 @@ struct LoadedPlugin {
     // from the realtime audio thread on the processor (VST3 permits that),
     // never marshaled onto this thread.
     std::string       load_path;                 // captured for the UI thread
+    std::string       load_uid;                  // class UID to load ("" = first effect)
+    DWORD             ui_thread_id{0};
     std::thread       ui_thread;
     HANDLE            ready_evt{nullptr};         // signaled when load + coordinator ready
     std::atomic<int>  load_status{ZVST_OTHER};
@@ -348,6 +446,21 @@ struct LoadedPlugin {
     Atom                                  wm_delete{0};
     Steinberg::IPtr<Steinberg::IPlugView> view;
     ZeusLinuxFrame                        linux_frame;
+    std::function<void()>*                editor_call{nullptr}; // cmd 4 payload
+#elif defined(__APPLE__)
+    // When the host runs an AppKit loop (desktop mode) every non-audio call —
+    // load, state, editor, unload — runs on the main thread so the plug-in
+    // sees one thread affinity, as on Windows. Headless, they run on the
+    // caller's thread and editors are unavailable.
+    bool                                  ui_on_main{false};
+    std::atomic<bool>                     editor_open_flag{false};
+    std::string                           editor_title;
+    ZeusComponentHandler                  component_handler;
+    // Main thread only.
+    void*                                 mac_window{nullptr};
+    void*                                 mac_timer{nullptr};
+    Steinberg::IPtr<Steinberg::IPlugView> view;
+    ZeusMacPlugFrame                      mac_frame;
 #endif
 };
 
@@ -385,17 +498,20 @@ static void json_escape(const std::string& s, std::string& out) {
     }
 }
 
-// Look up the first kVstAudioEffectClass in the factory.
+// Instantiate the kVstAudioEffectClass whose UID string (as zvst_describe
+// reports it) equals `uid`, or the module's first effect class when `uid` is
+// empty.
 Steinberg::IPtr<vst::IComponent>
-instantiate_first_audio_effect(const VST3::Hosting::PluginFactory& factory,
-                               int32_t* status_out)
+instantiate_audio_effect(const VST3::Hosting::PluginFactory& factory,
+                         const std::string& uid,
+                         int32_t* status_out)
 {
     auto class_infos = factory.classInfos();
     for (const auto& ci : class_infos) {
-        if (ci.category() == kVstAudioEffectClass) {
-            auto comp = factory.createInstance<vst::IComponent>(ci.ID());
-            if (comp) return comp;
-        }
+        if (ci.category() != kVstAudioEffectClass) continue;
+        if (!uid.empty() && ci.ID().toString() != uid) continue;
+        auto comp = factory.createInstance<vst::IComponent>(ci.ID());
+        if (comp) return comp;
     }
     *status_out = ZVST_NO_AUDIO_EFFECT_CLASS;
     return nullptr;
@@ -404,10 +520,8 @@ instantiate_first_audio_effect(const VST3::Hosting::PluginFactory& factory,
 bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     using namespace Steinberg;
 
-    if (p.component->setActive(false) != kResultOk) {
-        // not fatal; some plugins return error here pre-init
-    }
-
+    // No setActive() here: the spec only allows it once setup is done, and
+    // some plug-ins (u-he) dereference state that initialize() creates.
     if (p.component->setIoMode(vst::kAdvanced) != kResultOk) {
         // optional, ignore
     }
@@ -438,8 +552,28 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     // path, so it fails the load. (The previous revision forced stereo for a
     // mono host but left the bus geometry at 1 channel — a latent mismatch
     // that fed stereo-arranged plug-ins a single buffer pointer.)
+    //
+    // setBusArrangements takes one arrangement per bus. Plug-ins with a
+    // sidechain input (FabFilter Pro-Q/Pro-C, most compressors/gates) refuse
+    // a call that names fewer buses than they declare, so the main bus gets
+    // the arrangement under negotiation and every aux bus keeps its own.
+    const int32 in_bus_count  = p.component->getBusCount(vst::kAudio, vst::kInput);
+    const int32 out_bus_count = p.component->getBusCount(vst::kAudio, vst::kOutput);
+    if (in_bus_count < 1 || out_bus_count < 1) {
+        *status_out = ZVST_ACTIVATE_FAILED;
+        return false;
+    }
+    std::vector<vst::SpeakerArrangement> in_arr(static_cast<size_t>(in_bus_count), 0);
+    std::vector<vst::SpeakerArrangement> out_arr(static_cast<size_t>(out_bus_count), 0);
+    for (int32 i = 0; i < in_bus_count; i++)
+        p.processor->getBusArrangement(vst::kInput, i, in_arr[static_cast<size_t>(i)]);
+    for (int32 i = 0; i < out_bus_count; i++)
+        p.processor->getBusArrangement(vst::kOutput, i, out_arr[static_cast<size_t>(i)]);
     auto try_arrangement = [&](vst::SpeakerArrangement a) -> bool {
-        return p.processor->setBusArrangements(&a, 1, &a, 1) == kResultTrue;
+        in_arr[0] = a;
+        out_arr[0] = a;
+        return p.processor->setBusArrangements(in_arr.data(), in_bus_count,
+                                               out_arr.data(), out_bus_count) == kResultTrue;
     };
     const vst::SpeakerArrangement want = (p.channels == 1)
         ? vst::SpeakerArr::kMono : vst::SpeakerArr::kStereo;
@@ -463,16 +597,19 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
         }
     }
 
-    // Refuse plug-ins that can't process 32-bit float. The whole Zeus audio
-    // path is float32; a 64-bit-only effect (vanishingly rare for audio
-    // effects) would otherwise fail opaquely inside setupProcessing.
-    if (p.processor->canProcessSampleSize(vst::kSample32) != kResultTrue) {
+    // The Zeus audio path is float32. A plug-in that only processes 64-bit
+    // samples is still hosted: zvst_process converts at the boundary.
+    const bool can32 = p.processor->canProcessSampleSize(vst::kSample32) == kResultTrue;
+    const bool can64 = p.processor->canProcessSampleSize(vst::kSample64) == kResultTrue;
+    if (!can32 && !can64) {
         *status_out = ZVST_UNSUPPORTED_PRECISION;
         return false;
     }
+    p.use64 = !can32;
+    const int32 sample_size = p.use64 ? vst::kSample64 : vst::kSample32;
 
     p.process_setup.processMode = vst::kRealtime;
-    p.process_setup.symbolicSampleSize = vst::kSample32;
+    p.process_setup.symbolicSampleSize = sample_size;
     p.process_setup.maxSamplesPerBlock = p.block_size;
     p.process_setup.sampleRate = static_cast<double>(p.sample_rate);
     if (p.processor->setupProcessing(p.process_setup) != kResultOk) {
@@ -480,11 +617,9 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
         return false;
     }
 
-    // Activate buses
-    int32_t in_bus_count  = p.component->getBusCount(vst::kAudio, vst::kInput);
-    int32_t out_bus_count = p.component->getBusCount(vst::kAudio, vst::kOutput);
-    if (in_bus_count > 0)  p.component->activateBus(vst::kAudio, vst::kInput,  0, true);
-    if (out_bus_count > 0) p.component->activateBus(vst::kAudio, vst::kOutput, 0, true);
+    // Activate the main buses only; sidechain / aux buses stay inactive.
+    p.component->activateBus(vst::kAudio, vst::kInput,  0, true);
+    p.component->activateBus(vst::kAudio, vst::kOutput, 0, true);
 
     if (p.component->setActive(true) != kResultOk) {
         *status_out = ZVST_ACTIVATE_FAILED;
@@ -506,12 +641,73 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     const int32_t pch = p.plugin_channels;
     p.in_buffer_ptrs.assign(static_cast<size_t>(pch), nullptr);
     p.out_buffer_ptrs.assign(static_cast<size_t>(pch), nullptr);
-    p.in_bus.numChannels  = pch;
-    p.out_bus.numChannels = pch;
-    p.in_bus.channelBuffers32  = p.in_buffer_ptrs.data();
-    p.out_bus.channelBuffers32 = p.out_buffer_ptrs.data();
-    p.in_bus.silenceFlags = 0;
-    p.out_bus.silenceFlags = 0;
+
+    // Aux buses: read back the arrangement each settled on and point every
+    // aux channel at shared scratch — silence in, discard out. Sized once
+    // here so the realtime path never allocates.
+    auto bus_channels = [&](vst::BusDirection dir, int32 i) -> int32 {
+        vst::SpeakerArrangement a = 0;
+        p.processor->getBusArrangement(dir, i, a);
+        return vst::SpeakerArr::getChannelCount(a);
+    };
+    std::vector<int32> aux_in_ch, aux_out_ch;
+    size_t aux_in_total = 0, aux_out_total = 0;
+    for (int32 i = 1; i < in_bus_count; i++) {
+        aux_in_ch.push_back(bus_channels(vst::kInput, i));
+        aux_in_total += static_cast<size_t>(aux_in_ch.back());
+    }
+    for (int32 i = 1; i < out_bus_count; i++) {
+        aux_out_ch.push_back(bus_channels(vst::kOutput, i));
+        aux_out_total += static_cast<size_t>(aux_out_ch.back());
+    }
+    const size_t bs = static_cast<size_t>(p.block_size);
+    if (p.use64) {
+        // The plug-in reads/writes doubles; in_buffer_ptrs/out_buffer_ptrs
+        // stay the float staging pointers zvst_process converts from/to.
+        p.in64.assign(static_cast<size_t>(pch) * bs, 0.0);
+        p.out64.assign(static_cast<size_t>(pch) * bs, 0.0);
+        p.in64_ptrs.resize(static_cast<size_t>(pch));
+        p.out64_ptrs.resize(static_cast<size_t>(pch));
+        for (int32 c = 0; c < pch; c++) {
+            p.in64_ptrs[static_cast<size_t>(c)]  = p.in64.data()  + static_cast<size_t>(c) * bs;
+            p.out64_ptrs[static_cast<size_t>(c)] = p.out64.data() + static_cast<size_t>(c) * bs;
+        }
+        if (aux_in_total > 0)  p.aux_silence64.assign(bs, 0.0);
+        if (aux_out_total > 0) p.aux_discard64.assign(bs, 0.0);
+        p.aux_in_ptrs64.assign(aux_in_total, p.aux_silence64.empty() ? nullptr : p.aux_silence64.data());
+        p.aux_out_ptrs64.assign(aux_out_total, p.aux_discard64.empty() ? nullptr : p.aux_discard64.data());
+    } else {
+        if (aux_in_total > 0)  p.aux_silence.assign(bs, 0.0f);
+        if (aux_out_total > 0) p.aux_discard.assign(bs, 0.0f);
+        p.aux_in_ptrs.assign(aux_in_total, p.aux_silence.empty() ? nullptr : p.aux_silence.data());
+        p.aux_out_ptrs.assign(aux_out_total, p.aux_discard.empty() ? nullptr : p.aux_discard.data());
+    }
+
+    p.in_buses.assign(static_cast<size_t>(in_bus_count), vst::AudioBusBuffers{});
+    p.out_buses.assign(static_cast<size_t>(out_bus_count), vst::AudioBusBuffers{});
+    p.in_buses[0].numChannels  = pch;
+    p.out_buses[0].numChannels = pch;
+    if (p.use64) {
+        p.in_buses[0].channelBuffers64  = p.in64_ptrs.data();
+        p.out_buses[0].channelBuffers64 = p.out64_ptrs.data();
+    } else {
+        p.in_buses[0].channelBuffers32  = p.in_buffer_ptrs.data();
+        p.out_buses[0].channelBuffers32 = p.out_buffer_ptrs.data();
+    }
+    size_t off = 0;
+    for (size_t i = 0; i < aux_in_ch.size(); i++) {
+        p.in_buses[i + 1].numChannels = aux_in_ch[i];
+        if (p.use64) p.in_buses[i + 1].channelBuffers64 = p.aux_in_ptrs64.data() + off;
+        else         p.in_buses[i + 1].channelBuffers32 = p.aux_in_ptrs.data() + off;
+        off += static_cast<size_t>(aux_in_ch[i]);
+    }
+    off = 0;
+    for (size_t i = 0; i < aux_out_ch.size(); i++) {
+        p.out_buses[i + 1].numChannels = aux_out_ch[i];
+        if (p.use64) p.out_buses[i + 1].channelBuffers64 = p.aux_out_ptrs64.data() + off;
+        else         p.out_buses[i + 1].channelBuffers32 = p.aux_out_ptrs.data() + off;
+        off += static_cast<size_t>(aux_out_ch[i]);
+    }
 
     if (pch != p.channels) {
         // Private planar staging for the plug-in's view, so the realtime path
@@ -522,12 +718,12 @@ bool wire_buses_and_activate(LoadedPlugin& p, int32_t* status_out) {
     }
 
     p.process_data.processMode = vst::kRealtime;
-    p.process_data.symbolicSampleSize = vst::kSample32;
+    p.process_data.symbolicSampleSize = sample_size;
     p.process_data.numSamples = 0; // set per call
-    p.process_data.numInputs  = (in_bus_count  > 0) ? 1 : 0;
-    p.process_data.numOutputs = (out_bus_count > 0) ? 1 : 0;
-    p.process_data.inputs  = (in_bus_count  > 0) ? &p.in_bus  : nullptr;
-    p.process_data.outputs = (out_bus_count > 0) ? &p.out_bus : nullptr;
+    p.process_data.numInputs  = in_bus_count;
+    p.process_data.numOutputs = out_bus_count;
+    p.process_data.inputs  = p.in_buses.data();
+    p.process_data.outputs = p.out_buses.data();
     p.process_data.inputParameterChanges = &p.input_changes;
     // A spec-compliant host always supplies an output queue too; some plug-ins
     // (e.g. DPF-based) assert/refuse when it is null. Cleared every block.
@@ -549,6 +745,7 @@ void teardown(LoadedPlugin& p) {
         p.controller->terminate();
     }
     p.controller = nullptr;
+    p.has_controller.store(false);
     if (p.component) {
         p.component->setActive(false);
         p.component->terminate();
@@ -558,11 +755,12 @@ void teardown(LoadedPlugin& p) {
     p.module = nullptr;
 }
 
-// Load the module, instantiate the first audio-effect component, and
-// wire + activate it for processing at p's geometry. Platform-agnostic;
-// on Windows this runs on the persistent UI thread, elsewhere on the
-// caller's thread. Returns ZVST_OK or a failure status.
-static int do_load(LoadedPlugin& p, const std::string& path) {
+// Load the module, instantiate the requested audio-effect class (the first
+// one when `uid` is empty), and wire + activate it for processing at p's
+// geometry. Platform-agnostic; runs on the plug-in's UI thread (Windows'
+// persistent per-plug-in thread, the macOS main thread in desktop mode) or
+// otherwise the caller's thread. Returns ZVST_OK or a failure status.
+static int do_load(LoadedPlugin& p, const std::string& path, const std::string& uid) {
     std::string err;
     p.module = VST3::Hosting::Module::create(path, err);
     if (!p.module) {
@@ -573,7 +771,7 @@ static int do_load(LoadedPlugin& p, const std::string& path) {
 
     auto& factory = p.module->getFactory();
     int status = ZVST_OK;
-    p.component = instantiate_first_audio_effect(factory, &status);
+    p.component = instantiate_audio_effect(factory, uid, &status);
     if (!p.component) return status;
 
     if (!wire_buses_and_activate(p, &status)) {
@@ -581,6 +779,84 @@ static int do_load(LoadedPlugin& p, const std::string& path) {
         return status;
     }
     return ZVST_OK;
+}
+
+// Diagnostic logging for the controller / editor / state paths — stderr,
+// captured in the backend log. Low volume (open/close/restore only).
+#define ZVST_LOG(...) do { std::fprintf(stderr, "[zvst] " __VA_ARGS__); std::fprintf(stderr, "\n"); std::fflush(stderr); } while (0)
+
+// Wire a freshly-created SEPARATE edit controller to its component: open the
+// bidirectional connection-point message channel and push the component's
+// current state into the controller. Many plug-ins need both before they
+// will create their editor view (TDR Nova among them — without this,
+// createView() returns null). Single-component effects (controller ==
+// component) need neither. Runs on the plug-in's UI thread.
+static void connect_and_sync(LoadedPlugin& p) {
+    using namespace Steinberg;
+    FUnknownPtr<vst::IConnectionPoint> ccp(p.component);
+    FUnknownPtr<vst::IConnectionPoint> ecp(p.controller);
+    if (ccp && ecp) {
+        ccp->connect(ecp);
+        ecp->connect(ccp);
+    }
+    MemoryStream stream;
+    if (p.component->getState(&stream) == kResultOk) {
+        stream.seek(0, IBStream::kIBSeekSet, nullptr);
+        p.controller->setComponentState(&stream);
+    }
+}
+
+// Lazily create (or adopt) the edit controller. Prefer a dedicated
+// controller class (the common 2-object plug-in design); fall back to a
+// single-component effect where the component itself is the controller.
+// Controller state restored before the controller existed is applied here.
+// Runs on the plug-in's UI thread.
+static bool ensure_controller(LoadedPlugin& p) {
+    using namespace Steinberg;
+    if (p.controller) return true;
+
+    TUID cid;
+    if (p.component->getControllerClassId(cid) == kResultOk) {
+        auto& factory = p.module->getFactory();
+        auto ctrl = factory.createInstance<vst::IEditController>(VST3::UID::fromTUID(cid));
+        if (ctrl && ctrl->initialize(&GlobalHost::instance()) == kResultOk) {
+            p.controller = ctrl;
+            p.controller_is_separate = true;
+            connect_and_sync(p);
+            if (!p.pending_ctrl_state.empty()) {
+                MemoryStream cs;
+                cs.write(p.pending_ctrl_state.data(),
+                         static_cast<int32>(p.pending_ctrl_state.size()), nullptr);
+                cs.seek(0, IBStream::kIBSeekSet, nullptr);
+                tresult r = p.controller->setState(&cs);
+                ZVST_LOG("applied held controller state (%zu bytes) res=%d",
+                         p.pending_ctrl_state.size(), static_cast<int>(r));
+                p.pending_ctrl_state.clear();
+            }
+            p.has_controller.store(true);
+            return true;
+        }
+        ZVST_LOG("controller class could not be created/initialised");
+    }
+
+    vst::IEditController* raw = nullptr;
+    if (p.component->queryInterface(vst::IEditController::iid,
+            reinterpret_cast<void**>(&raw)) == kResultOk && raw) {
+        p.controller = owned(raw);
+        p.controller_is_separate = false;
+        p.has_controller.store(true);
+        return true;
+    }
+    return false;
+}
+
+// Forward queued plug-in output parameter changes to the edit controller so
+// meters inside the editor move. UI thread, while the controller exists.
+static void drain_out_params(LoadedPlugin& p) {
+    if (!p.controller) { p.out_params.drain([](const OutParamRing::Item&) {}); return; }
+    p.out_params.drain([&](const OutParamRing::Item& it) {
+        p.controller->setParamNormalized(static_cast<vst::ParamID>(it.id), it.value);
+    });
 }
 
 #ifdef _WIN32
@@ -594,6 +870,10 @@ static int do_load(LoadedPlugin& p, const std::string& path) {
 // Diagnostic logging for the editor path — goes to stderr, captured in
 // the backend log. Low volume (open/close only), so unconditional.
 #define ZED_LOG(...) do { std::fprintf(stderr, "[zvst-editor] " __VA_ARGS__); std::fprintf(stderr, "\n"); std::fflush(stderr); } while (0)
+
+// Coordinator timer that drains OutParamRing into the controller while the
+// editor is open.
+static constexpr UINT_PTR kZvstOutParamTimer = 1;
 
 static std::wstring utf8_to_wide(const std::string& s) {
     if (s.empty()) return std::wstring();
@@ -636,81 +916,13 @@ static void register_editor_wndclass() {
     });
 }
 
-// Wire a freshly-created SEPARATE edit controller to its component:
-// open the bidirectional connection-point message channel and push the
-// component's current state into the controller. Both are required by
-// many plug-ins before they will create their editor view (TDR Nova
-// among them — without this, createView() returns null). For a
-// single-component effect (controller == component) neither step
-// applies, so this is only called on the two-object path.
-static void connect_and_sync(LoadedPlugin& p) {
-    using namespace Steinberg;
-    FUnknownPtr<vst::IConnectionPoint> ccp(p.component);
-    FUnknownPtr<vst::IConnectionPoint> ecp(p.controller);
-    if (ccp && ecp) {
-        ccp->connect(ecp);
-        ecp->connect(ccp);
-        ZED_LOG("connected component<->controller");
-    } else {
-        ZED_LOG("connection points missing (component=%d controller=%d)",
-                ccp ? 1 : 0, ecp ? 1 : 0);
-    }
-
-    MemoryStream stream;
-    if (p.component->getState(&stream) == kResultOk) {
-        stream.seek(0, IBStream::kIBSeekSet, nullptr);
-        tresult sr = p.controller->setComponentState(&stream);
-        ZED_LOG("setComponentState res=%d", static_cast<int>(sr));
-    } else {
-        ZED_LOG("component getState failed");
-    }
-}
-
-// Lazily create (or adopt) the edit controller. Prefer a dedicated
-// controller class (the common 2-object plug-in design); fall back to a
-// single-component effect where the component itself is the controller.
-static bool ensure_controller(LoadedPlugin& p) {
-    using namespace Steinberg;
-    if (p.controller) return true;
-
-    TUID cid;
-    tresult cidRes = p.component->getControllerClassId(cid);
-    ZED_LOG("getControllerClassId res=%d", static_cast<int>(cidRes));
-    if (cidRes == kResultOk) {
-        auto& factory = p.module->getFactory();
-        auto ctrl = factory.createInstance<vst::IEditController>(VST3::UID::fromTUID(cid));
-        ZED_LOG("createInstance(controller) -> %p", static_cast<void*>(ctrl.get()));
-        if (ctrl) {
-            tresult initRes = ctrl->initialize(&GlobalHost::instance());
-            ZED_LOG("controller->initialize res=%d", static_cast<int>(initRes));
-            if (initRes == kResultOk) {
-                p.controller = ctrl;
-                p.controller_is_separate = true;
-                connect_and_sync(p);
-                return true;
-            }
-        }
-    }
-
-    // Single-component effect: the component implements IEditController.
-    vst::IEditController* raw = nullptr;
-    tresult qiRes = p.component->queryInterface(vst::IEditController::iid,
-            reinterpret_cast<void**>(&raw));
-    ZED_LOG("component QI IEditController res=%d raw=%p", static_cast<int>(qiRes), static_cast<void*>(raw));
-    if (qiRes == kResultOk && raw) {
-        p.controller = owned(raw);
-        p.controller_is_separate = false;
-        return true;
-    }
-    return false;
-}
-
 // Close the editor window (if open) and detach the view. Runs on the UI
 // thread — from the window's WM_CLOSE, the CLOSE command, or final
 // teardown. Idempotent. The plug-in stays loaded so the editor can be
 // reopened.
 static void editor_close_on_ui(LoadedPlugin& p) {
     if (!p.editor_open_flag.load() && !p.editor_hwnd && !p.view) return;
+    if (p.coordinator_hwnd) KillTimer(p.coordinator_hwnd, kZvstOutParamTimer);
     if (p.view) {
         p.view->setFrame(nullptr);
         p.view->removed();
@@ -800,6 +1012,8 @@ static int editor_open_on_ui(LoadedPlugin& p) {
     UpdateWindow(hwnd);
     ZED_LOG("editor shown hwnd=%p", static_cast<void*>(hwnd));
     p.editor_open_flag.store(true);
+    // ~30 Hz: forward the plug-in's output parameters (meters) to its editor.
+    if (p.coordinator_hwnd) SetTimer(p.coordinator_hwnd, kZvstOutParamTimer, 33, nullptr);
     return 1;
 }
 
@@ -810,6 +1024,7 @@ enum {
     WM_ZVST_OPEN_EDITOR  = WM_APP + 1,
     WM_ZVST_CLOSE_EDITOR = WM_APP + 2,
     WM_ZVST_UNLOAD       = WM_APP + 3,
+    WM_ZVST_CALL         = WM_APP + 4, // lParam = std::function<void()>*
 };
 
 static const wchar_t* kZvstCoordWndClass = L"ZeusVstCoordinator";
@@ -822,6 +1037,12 @@ static LRESULT CALLBACK zvst_coord_wndproc(HWND h, UINT msg, WPARAM w, LPARAM l)
         case WM_ZVST_UNLOAD:
             if (p) editor_close_on_ui(*p);
             PostQuitMessage(0); // break the UI thread's message loop
+            return 0;
+        case WM_ZVST_CALL:
+            (*reinterpret_cast<std::function<void()>*>(l))();
+            return 1;
+        case WM_TIMER:
+            if (p && w == kZvstOutParamTimer) drain_out_params(*p);
             return 0;
         default: return DefWindowProcW(h, msg, w, l);
     }
@@ -844,7 +1065,8 @@ static void register_coord_wndclass() {
 static void ui_thread_main(LoadedPlugin* p) {
     OleInitialize(nullptr); // STA + OLE (VSTGUI registers OLE drag/drop)
 
-    int st = do_load(*p, p->load_path);
+    p->ui_thread_id = GetCurrentThreadId();
+    int st = do_load(*p, p->load_path, p->load_uid);
     p->load_status.store(st);
     if (st != ZVST_OK) {
         ZED_LOG("load failed status=%d", st);
@@ -888,46 +1110,6 @@ static void ui_thread_main(LoadedPlugin* p) {
 
 #define ZEDL_LOG(...) do { std::fprintf(stderr, "[zvst-editor:linux] " __VA_ARGS__); std::fprintf(stderr, "\n"); std::fflush(stderr); } while (0)
 
-// Connect component<->controller + push component state into the controller.
-// Parity with the Windows path; many plug-ins need this before createView()
-// succeeds. Only used on the separate-controller (2-object) path.
-static void linux_connect_and_sync(LoadedPlugin& p) {
-    using namespace Steinberg;
-    FUnknownPtr<vst::IConnectionPoint> ccp(p.component);
-    FUnknownPtr<vst::IConnectionPoint> ecp(p.controller);
-    if (ccp && ecp) { ccp->connect(ecp); ecp->connect(ccp); }
-    MemoryStream stream;
-    if (p.component->getState(&stream) == kResultOk) {
-        stream.seek(0, IBStream::kIBSeekSet, nullptr);
-        p.controller->setComponentState(&stream);
-    }
-}
-
-// Lazily create (or adopt) the edit controller — prefer the dedicated
-// controller class, fall back to a single-component effect.
-static bool linux_ensure_controller(LoadedPlugin& p) {
-    using namespace Steinberg;
-    if (p.controller) return true;
-    TUID cid;
-    if (p.component->getControllerClassId(cid) == kResultOk) {
-        auto& factory = p.module->getFactory();
-        auto ctrl = factory.createInstance<vst::IEditController>(VST3::UID::fromTUID(cid));
-        if (ctrl && ctrl->initialize(&GlobalHost::instance()) == kResultOk) {
-            p.controller = ctrl;
-            p.controller_is_separate = true;
-            linux_connect_and_sync(p);
-            return true;
-        }
-    }
-    vst::IEditController* raw = nullptr;
-    if (p.component->queryInterface(vst::IEditController::iid, reinterpret_cast<void**>(&raw)) == kResultOk && raw) {
-        p.controller = owned(raw);
-        p.controller_is_separate = false;
-        return true;
-    }
-    return false;
-}
-
 static void editor_close_on_thread(LoadedPlugin& p) {
     if (!p.editor_open_flag.load() && !p.x_window && !p.view) return;
     if (p.view) { p.view->setFrame(nullptr); p.view->removed(); p.view = nullptr; }
@@ -943,7 +1125,7 @@ static void editor_close_on_thread(LoadedPlugin& p) {
 static int editor_open_on_thread(LoadedPlugin& p) {
     using namespace Steinberg;
     if (p.editor_open_flag.load()) return 1;
-    if (!linux_ensure_controller(p)) { ZEDL_LOG("ensure_controller FAILED"); return 0; }
+    if (!ensure_controller(p)) { ZEDL_LOG("ensure_controller FAILED"); return 0; }
     p.component_handler.owner = &p;
     p.controller->setComponentHandler(&p.component_handler);
 
@@ -1003,6 +1185,7 @@ static int editor_open_on_thread(LoadedPlugin& p) {
 
 static void editor_teardown_on_thread(LoadedPlugin& p) {
     editor_close_on_thread(p);
+    p.has_controller.store(false);
     if (p.controller && p.controller_is_separate) {
         p.controller->setComponentHandler(nullptr);
         p.controller->terminate();
@@ -1038,6 +1221,10 @@ static void editor_thread_main(LoadedPlugin* p) {
             editor_close_on_thread(*p);
             std::lock_guard<std::mutex> lk(p->editor_cmd_mtx);
             p->editor_cmd_result = 1; p->editor_cmd_done = true; p->editor_cmd_cv.notify_all();
+        } else if (cmd == 4) {
+            if (p->editor_call) (*p->editor_call)();
+            std::lock_guard<std::mutex> lk(p->editor_cmd_mtx);
+            p->editor_cmd_result = 1; p->editor_cmd_done = true; p->editor_cmd_cv.notify_all();
         }
 
         std::vector<struct pollfd> pfds;
@@ -1045,7 +1232,8 @@ static void editor_thread_main(LoadedPlugin* p) {
         pfds.push_back({xfd, POLLIN, 0});
         for (auto& eh : p->linux_frame.handlers) pfds.push_back({eh.fd, POLLIN, 0});
 
-        int timeout = 1000;
+        // ~30 Hz while the editor is up, to forward output parameters (meters).
+        int timeout = p->editor_open_flag.load() ? 33 : 1000;
         uint64_t nowms = ZeusLinuxFrame::now_ms();
         for (auto& t : p->linux_frame.timers) {
             long d = static_cast<long>(t.nextMs - nowms);
@@ -1078,6 +1266,7 @@ static void editor_thread_main(LoadedPlugin* p) {
         nowms = ZeusLinuxFrame::now_ms();
         for (auto& t : p->linux_frame.timers)
             if (static_cast<long>(t.nextMs - nowms) <= 0) { t.h->onTimer(); t.nextMs = nowms + t.intervalMs; }
+        if (p->editor_open_flag.load()) drain_out_params(*p);
     }
 
     editor_teardown_on_thread(*p);
@@ -1086,11 +1275,18 @@ static void editor_thread_main(LoadedPlugin* p) {
 }
 
 // Post a command to the editor thread and (except for unload) wait for it. Spawns
-// the thread on the first 'open'. Returns the command result (open: 1 shown / 0
-// failed). Control thread only.
-static int post_editor_cmd(LoadedPlugin& p, int cmd, int timeoutMs) {
+// the thread on the first 'open'. Commands: 1 open, 2 close, 3 unload, 4 run
+// `call` on the editor thread. Returns the command result (open: 1 shown / 0
+// failed; 0 on timeout). Control thread only.
+static int post_editor_cmd(LoadedPlugin& p, int cmd, int timeoutMs,
+                           std::function<void()>* call = nullptr) {
     if (!p.editor_thread_running.load()) {
         if (cmd != 1) return 0; // only 'open' starts the thread
+        // A previous editor thread that ended on its own (no X display) must
+        // be joined before the std::thread is reused, or reassigning a
+        // joinable thread calls std::terminate.
+        if (p.editor_thread.joinable()) p.editor_thread.join();
+        if (p.cmd_pipe[0] >= 0) { close(p.cmd_pipe[0]); close(p.cmd_pipe[1]); p.cmd_pipe[0] = p.cmd_pipe[1] = -1; }
         if (pipe(p.cmd_pipe) != 0) return 0;
         p.editor_thread_running.store(true);
         try { p.editor_thread = std::thread(editor_thread_main, &p); }
@@ -1103,6 +1299,7 @@ static int post_editor_cmd(LoadedPlugin& p, int cmd, int timeoutMs) {
     }
     std::unique_lock<std::mutex> lk(p.editor_cmd_mtx);
     p.editor_cmd = cmd; p.editor_cmd_done = false; p.editor_cmd_result = 0;
+    if (cmd == 4) p.editor_call = call;
     if (p.cmd_pipe[1] >= 0) { char c = 1; ssize_t n = write(p.cmd_pipe[1], &c, 1); (void)n; }
     if (cmd == 3) return 1; // unload: the join in zvst_unload waits for exit
     bool ok = p.editor_cmd_cv.wait_for(lk, std::chrono::milliseconds(timeoutMs),
@@ -1110,6 +1307,205 @@ static int post_editor_cmd(LoadedPlugin& p, int cmd, int timeoutMs) {
     return ok ? p.editor_cmd_result : 0;
 }
 #endif // __linux__
+
+#if defined(__APPLE__)
+// ---------------------------------------------------------------------
+// Editor (plug-in GUI) host support — macOS. The view attaches to the
+// content NSView of a bridge-owned NSWindow (mac_ui.mm). All of it runs on
+// the main thread, where the plug-in was loaded (ui_on_main).
+// ---------------------------------------------------------------------
+
+// Tear the editor down: stop the meter timer, detach the view, destroy the
+// window. Main thread; idempotent. The plug-in stays loaded.
+static void mac_editor_close_on_main(LoadedPlugin& p) {
+    if (p.mac_timer) { zvst_mac::timer_stop(p.mac_timer); p.mac_timer = nullptr; }
+    if (p.view) { p.view->setFrame(nullptr); p.view->removed(); p.view = nullptr; }
+    p.mac_frame.window = nullptr;
+    if (p.mac_window) {
+        void* w = p.mac_window;
+        p.mac_window = nullptr;
+        zvst_mac::editor_window_destroy(w);
+    }
+    p.editor_open_flag.store(false);
+}
+
+// Create the editor window and attach the plug-in's view. Main thread.
+// Returns 1 when shown, 0 on failure.
+static int mac_editor_open_on_main(LoadedPlugin& p) {
+    using namespace Steinberg;
+    if (p.editor_open_flag.load()) return 1;
+    if (!ensure_controller(p)) { ZVST_LOG("editor: no edit controller"); return 0; }
+    p.component_handler.owner = &p;
+    p.controller->setComponentHandler(&p.component_handler);
+
+    IPlugView* raw = p.controller->createView(vst::ViewType::kEditor);
+    if (!raw) { ZVST_LOG("editor: createView returned null"); return 0; }
+    p.view = owned(raw);
+    if (p.view->isPlatformTypeSupported(kPlatformTypeNSView) != kResultTrue) {
+        ZVST_LOG("editor: plug-in has no NSView editor");
+        p.view = nullptr;
+        return 0;
+    }
+
+    ViewRect rect{};
+    p.view->getSize(&rect);
+    const int w = rect.getWidth()  > 0 ? rect.getWidth()  : 800;
+    const int h = rect.getHeight() > 0 ? rect.getHeight() : 600;
+    LoadedPlugin* pp = &p;
+    p.mac_window = zvst_mac::editor_window_create(
+        p.editor_title.empty() ? "VST3 Plug-in" : p.editor_title.c_str(), w, h,
+        p.view->canResize() == kResultTrue,
+        [pp] { mac_editor_close_on_main(*pp); }); // operator closed the window
+    if (!p.mac_window) { p.view = nullptr; return 0; }
+
+    p.mac_frame.window = p.mac_window;
+    p.view->setFrame(&p.mac_frame);
+    tresult att = p.view->attached(zvst_mac::editor_window_content_view(p.mac_window),
+                                   kPlatformTypeNSView);
+    if (att != kResultOk) {
+        ZVST_LOG("editor: attached failed res=%d", static_cast<int>(att));
+        mac_editor_close_on_main(p);
+        return 0;
+    }
+    // The plug-in may have resized itself during attached().
+    ViewRect cur{};
+    if (p.view->getSize(&cur) == kResultOk && cur.getWidth() > 0 && cur.getHeight() > 0 &&
+        (cur.getWidth() != w || cur.getHeight() != h))
+        zvst_mac::editor_window_set_content_size(p.mac_window, cur.getWidth(), cur.getHeight());
+
+    zvst_mac::editor_window_show(p.mac_window);
+    // ~30 Hz: forward the plug-in's output parameters (meters) to its editor.
+    p.mac_timer = zvst_mac::timer_start(33, [pp] { drain_out_params(*pp); });
+    p.editor_open_flag.store(true);
+    return 1;
+}
+#endif // __APPLE__
+
+// Run `fn` on the thread that owns the plug-in's controller and editor:
+// Windows' per-plug-in UI thread, the Linux editor thread once it exists,
+// the macOS main thread in desktop mode — inline everywhere else, or when
+// already there. Waits up to timeout_ms; false on timeout. `fn` may still
+// run after a timeout, so it must only capture state it co-owns
+// (shared_ptr), never the caller's stack.
+static bool run_on_plugin_thread(LoadedPlugin& p, const std::function<void()>& fn, int timeout_ms) {
+#ifdef _WIN32
+    if (!p.coordinator_hwnd || GetCurrentThreadId() == p.ui_thread_id) { fn(); return true; }
+    auto* call = new std::function<void()>(fn);
+    DWORD_PTR res = 0;
+    if (!SendMessageTimeoutW(p.coordinator_hwnd, WM_ZVST_CALL, 0,
+                             reinterpret_cast<LPARAM>(call), SMTO_NORMAL,
+                             static_cast<UINT>(timeout_ms), &res))
+        return false; // the UI thread may still run it later: leak `call` on purpose
+    delete call;
+    return true;
+#elif defined(__linux__)
+    if (!p.editor_thread_running.load() || std::this_thread::get_id() == p.editor_thread.get_id()) {
+        fn();
+        return true;
+    }
+    auto* call = new std::function<void()>(fn);
+    if (!post_editor_cmd(p, 4, timeout_ms, call)) return false; // leak on timeout, as above
+    delete call;
+    return true;
+#elif defined(__APPLE__)
+    if (!p.ui_on_main) { fn(); return true; }
+    return zvst_mac::run_on_main(fn, timeout_ms);
+#else
+    (void)p; (void)timeout_ms;
+    fn();
+    return true;
+#endif
+}
+
+// ---- State blob ------------------------------------------------------
+// "ZVS1" | u32 component_len | u32 controller_len | component | controller
+// (little-endian lengths). The controller part is present only for plug-ins
+// with a separate edit controller; single-component effects keep everything
+// in the component state.
+
+static constexpr uint8_t kStateMagic[4] = {'Z', 'V', 'S', '1'};
+static constexpr size_t  kStateHeader = 12;
+
+static void put_u32le(uint8_t* d, uint32_t v) {
+    d[0] = static_cast<uint8_t>(v); d[1] = static_cast<uint8_t>(v >> 8);
+    d[2] = static_cast<uint8_t>(v >> 16); d[3] = static_cast<uint8_t>(v >> 24);
+}
+static uint32_t get_u32le(const uint8_t* d) {
+    return static_cast<uint32_t>(d[0]) | (static_cast<uint32_t>(d[1]) << 8) |
+           (static_cast<uint32_t>(d[2]) << 16) | (static_cast<uint32_t>(d[3]) << 24);
+}
+
+static std::vector<uint8_t> stream_to_bytes(const Steinberg::MemoryStream& ms) {
+    const char* d = ms.getData();
+    const auto n = static_cast<size_t>(ms.getSize());
+    return d && n ? std::vector<uint8_t>(d, d + n) : std::vector<uint8_t>();
+}
+
+static void bytes_to_stream(Steinberg::MemoryStream& ms, const uint8_t* d, size_t n) {
+    if (n) ms.write(const_cast<uint8_t*>(d), static_cast<Steinberg::int32>(n), nullptr);
+    ms.seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
+}
+
+// Serialise on the plug-in's thread. ZVST_OK with `out` filled.
+static int build_state_blob(LoadedPlugin& p, std::vector<uint8_t>& out) {
+    using namespace Steinberg;
+    MemoryStream comp;
+    if (p.component->getState(&comp) != kResultOk) comp.setSize(0); // no state is still a state
+    std::vector<uint8_t> comp_bytes = stream_to_bytes(comp);
+    std::vector<uint8_t> ctrl_bytes;
+    if (p.controller && p.controller_is_separate) {
+        MemoryStream ctrl;
+        if (p.controller->getState(&ctrl) == kResultOk) ctrl_bytes = stream_to_bytes(ctrl);
+    } else if (!p.controller) {
+        ctrl_bytes = p.pending_ctrl_state; // restored, never opened: keep it
+    }
+    out.resize(kStateHeader + comp_bytes.size() + ctrl_bytes.size());
+    std::memcpy(out.data(), kStateMagic, 4);
+    put_u32le(out.data() + 4, static_cast<uint32_t>(comp_bytes.size()));
+    put_u32le(out.data() + 8, static_cast<uint32_t>(ctrl_bytes.size()));
+    if (!comp_bytes.empty()) std::memcpy(out.data() + kStateHeader, comp_bytes.data(), comp_bytes.size());
+    if (!ctrl_bytes.empty())
+        std::memcpy(out.data() + kStateHeader + comp_bytes.size(), ctrl_bytes.data(), ctrl_bytes.size());
+    return ZVST_OK;
+}
+
+// Restore on the plug-in's thread. Holds state_mtx across the processor's
+// setState so the audio thread passes blocks through instead of racing it.
+static int apply_state_blob(LoadedPlugin& p, const std::vector<uint8_t>& blob) {
+    using namespace Steinberg;
+    if (blob.size() < kStateHeader || std::memcmp(blob.data(), kStateMagic, 4) != 0)
+        return ZVST_INVALID_ARGUMENTS;
+    const size_t comp_len = get_u32le(blob.data() + 4);
+    const size_t ctrl_len = get_u32le(blob.data() + 8);
+    if (kStateHeader + comp_len + ctrl_len != blob.size()) return ZVST_INVALID_ARGUMENTS;
+    const uint8_t* comp = blob.data() + kStateHeader;
+    const uint8_t* ctrl = comp + comp_len;
+
+    tresult r = kResultOk;
+    if (comp_len) {
+        MemoryStream cs;
+        bytes_to_stream(cs, comp, comp_len);
+        std::lock_guard<std::mutex> lk(p.state_mtx);
+        r = p.component->setState(&cs);
+    }
+    if (p.controller && p.controller_is_separate) {
+        if (comp_len) {
+            MemoryStream cs;
+            bytes_to_stream(cs, comp, comp_len);
+            p.controller->setComponentState(&cs);
+        }
+        if (ctrl_len) {
+            MemoryStream ks;
+            bytes_to_stream(ks, ctrl, ctrl_len);
+            p.controller->setState(&ks);
+        }
+    } else if (!p.controller) {
+        p.pending_ctrl_state.assign(ctrl, ctrl + ctrl_len);
+    }
+    ZVST_LOG("state restored (component %zu B, controller %zu B) res=%d",
+             comp_len, ctrl_len, static_cast<int>(r));
+    return (r == kResultOk || r == kNotImplemented) ? ZVST_OK : ZVST_OTHER;
+}
 
 } // namespace
 
@@ -1123,8 +1519,9 @@ int32_t zvst_init(int32_t abi) {
     return ZVST_OK;
 }
 
-int32_t zvst_load_vst3(
+int32_t zvst_load_vst3_class(
     const char* path,
+    const char* class_uid,
     int32_t channels,
     int32_t sample_rate,
     int32_t block_size,
@@ -1134,6 +1531,7 @@ int32_t zvst_load_vst3(
     if (channels < 1 || channels > 2) return ZVST_INVALID_ARGUMENTS;
     if (sample_rate < 44100 || sample_rate > 192000) return ZVST_INVALID_ARGUMENTS;
     if (block_size < 32 || block_size > 4096) return ZVST_INVALID_ARGUMENTS;
+    const std::string uid = class_uid ? class_uid : "";
 
     auto p = std::make_unique<LoadedPlugin>();
     p->channels = channels;
@@ -1145,6 +1543,7 @@ int32_t zvst_load_vst3(
     // editor share one thread affinity (required for VSTGUI/JUCE editors).
     // zvst_process still calls the processor directly on the audio thread.
     p->load_path = path;
+    p->load_uid = uid;
     p->ready_evt = CreateEventW(nullptr, TRUE /*manual reset*/, FALSE, nullptr);
     if (!p->ready_evt) return ZVST_OTHER;
     try {
@@ -1163,12 +1562,37 @@ int32_t zvst_load_vst3(
     }
     *out_handle = static_cast<void*>(p.release());
     return ZVST_OK;
+#elif defined(__APPLE__)
+    // Desktop mode: load on the main thread, where the editor will live.
+    p->ui_on_main = zvst_mac::ui_loop_available();
+    auto status = std::make_shared<std::atomic<int>>(ZVST_OTHER);
+    LoadedPlugin* raw = p.get();
+    const std::string spath = path;
+    if (!run_on_plugin_thread(*raw, [raw, status, spath, uid] {
+            status->store(do_load(*raw, spath, uid));
+        }, 30000)) {
+        (void)p.release(); // main thread wedged mid-load: leak rather than free under it
+        return ZVST_OTHER;
+    }
+    if (status->load() != ZVST_OK) return status->load();
+    *out_handle = static_cast<void*>(p.release());
+    return ZVST_OK;
 #else
-    int status = do_load(*p, path);
+    int status = do_load(*p, path, uid);
     if (status != ZVST_OK) return status;
     *out_handle = static_cast<void*>(p.release());
     return ZVST_OK;
 #endif
+}
+
+int32_t zvst_load_vst3(
+    const char* path,
+    int32_t channels,
+    int32_t sample_rate,
+    int32_t block_size,
+    zvst_handle_t* out_handle)
+{
+    return zvst_load_vst3_class(path, nullptr, channels, sample_rate, block_size, out_handle);
 }
 
 int32_t zvst_process(
@@ -1181,6 +1605,16 @@ int32_t zvst_process(
     if (!input || !output) return ZVST_INVALID_ARGUMENTS;
     auto* p = static_cast<LoadedPlugin*>(handle);
     if (frames < 1 || frames > p->block_size) return ZVST_INVALID_ARGUMENTS;
+
+    // A state restore (zvst_set_state) is replacing the processor's state:
+    // pass this block through untouched rather than wait for it.
+    std::unique_lock<std::mutex> state_lk(p->state_mtx, std::try_to_lock);
+    if (!state_lk.owns_lock()) {
+        if (output != input)
+            std::memmove(output, input,
+                static_cast<size_t>(p->channels) * static_cast<size_t>(frames) * sizeof(float));
+        return ZVST_OK;
+    }
 
     // Wire the plug-in's planar I/O for this block. When host and plug-in
     // channel counts match (the common case) the bus buffers point straight
@@ -1215,6 +1649,21 @@ int32_t zvst_process(
         p->out_buffer_ptrs[0] = p->plugin_out_scratch.data();
     }
     p->process_data.numSamples = frames;
+    // Aux (sidechain) inputs must read as silence; a plug-in is allowed to
+    // treat its input buffers as scratch, so re-zero before every block.
+    if (!p->aux_silence.empty())
+        std::memset(p->aux_silence.data(), 0, n * sizeof(float));
+    if (p->use64) {
+        // 64-bit-only plug-in: widen the float staging buffers into its
+        // double input buffers (narrowed back after process()).
+        for (int c = 0; c < pch; c++) {
+            const float* src = p->in_buffer_ptrs[static_cast<size_t>(c)];
+            double* dst = p->in64_ptrs[static_cast<size_t>(c)];
+            for (size_t i = 0; i < n; i++) dst[i] = static_cast<double>(src[i]);
+        }
+        if (!p->aux_silence64.empty())
+            std::memset(p->aux_silence64.data(), 0, n * sizeof(double));
+    }
 
     // Drain GUI / control-thread parameter edits into the processor's
     // input changes for this block. try_lock so the realtime thread NEVER
@@ -1239,6 +1688,14 @@ int32_t zvst_process(
         return ZVST_OTHER;
     }
 
+    if (p->use64) {
+        for (int c = 0; c < pch; c++) {
+            const double* src = p->out64_ptrs[static_cast<size_t>(c)];
+            float* dst = p->out_buffer_ptrs[static_cast<size_t>(c)];
+            for (size_t i = 0; i < n; i++) dst[i] = static_cast<float>(src[i]);
+        }
+    }
+
     // Bridge the plug-in's output back to the host geometry (no-op on the
     // matched fast path, where the plug-in wrote straight to `output`).
     if (pch != hch) {
@@ -1253,9 +1710,23 @@ int32_t zvst_process(
         }
     }
 
-    // Clear any queued parameter changes — they've been applied. The output
-    // queue is drained the same way: we don't surface plug-in automation back
-    // to the host yet, so reset it so it can't grow unbounded across blocks.
+    // Output parameter changes (meters, gain reduction) go to the editor via
+    // the UI thread's drain — only while a controller exists to show them.
+    if (p->has_controller.load(std::memory_order_relaxed)) {
+        const Steinberg::int32 count = p->output_changes.getParameterCount();
+        for (Steinberg::int32 i = 0; i < count; i++) {
+            auto* q = p->output_changes.getParameterData(i);
+            if (!q) continue;
+            const Steinberg::int32 points = q->getPointCount();
+            if (points < 1) continue;
+            Steinberg::int32 offset = 0;
+            Steinberg::Vst::ParamValue value = 0;
+            if (q->getPoint(points - 1, offset, value) == Steinberg::kResultTrue)
+                p->out_params.push(static_cast<uint32_t>(q->getParameterId()), value);
+        }
+    }
+
+    // Both queues are per-block: clear them for the next one.
     p->input_changes.clearQueue();
     p->output_changes.clearQueue();
 
@@ -1333,8 +1804,21 @@ int32_t zvst_unload(zvst_handle_t handle) {
             }
         }
     }
+    // An editor thread that already ended on its own (e.g. no X display) is
+    // still joinable; destroying it unjoined would call std::terminate.
+    if (p->editor_thread.joinable()) p->editor_thread.join();
     if (p->cmd_pipe[0] >= 0) { close(p->cmd_pipe[0]); close(p->cmd_pipe[1]); }
     teardown(*p);
+    delete p;
+    return ZVST_OK;
+#elif defined(__APPLE__)
+    // Close the editor and tear down on the thread that loaded the plug-in.
+    // A main thread wedged in the plug-in for 10 s: leak rather than free.
+    if (!run_on_plugin_thread(*p, [p] {
+            mac_editor_close_on_main(*p);
+            teardown(*p);
+        }, 10000))
+        return ZVST_OK;
     delete p;
     return ZVST_OK;
 #else
@@ -1406,6 +1890,16 @@ int32_t zvst_editor_open(zvst_handle_t handle, const char* title) {
     // Open synchronously on the editor thread (spawned on first call). 20 s budget
     // mirrors the Windows path; a plug-in without a display or X11 support returns 0.
     return post_editor_cmd(*p, 1, 20000) ? ZVST_OK : ZVST_OTHER;
+#elif defined(__APPLE__)
+    if (!handle) return ZVST_INVALID_HANDLE;
+    auto* p = static_cast<LoadedPlugin*>(handle);
+    // AppKit needs the host's main run loop: available in desktop mode only.
+    if (!p->ui_on_main || !zvst_mac::ui_loop_available()) return ZVST_NOT_IMPLEMENTED;
+    p->editor_title = title ? title : "";
+    auto shown = std::make_shared<std::atomic<int>>(0);
+    if (!run_on_plugin_thread(*p, [p, shown] { shown->store(mac_editor_open_on_main(*p)); }, 20000))
+        return ZVST_OTHER;
+    return shown->load() ? ZVST_OK : ZVST_OTHER;
 #else
     (void)handle; (void)title;
     return ZVST_NOT_IMPLEMENTED;
@@ -1427,6 +1921,11 @@ int32_t zvst_editor_close(zvst_handle_t handle) {
     auto* p = static_cast<LoadedPlugin*>(handle);
     if (p->editor_thread_running.load()) post_editor_cmd(*p, 2, 5000);
     return ZVST_OK;
+#elif defined(__APPLE__)
+    if (!handle) return ZVST_OK;
+    auto* p = static_cast<LoadedPlugin*>(handle);
+    if (p->ui_on_main) run_on_plugin_thread(*p, [p] { mac_editor_close_on_main(*p); }, 5000);
+    return ZVST_OK;
 #else
     (void)handle;
     return ZVST_OK;
@@ -1438,13 +1937,42 @@ int32_t zvst_editor_is_open(zvst_handle_t handle) {
     if (!handle) return 0;
     auto* p = static_cast<LoadedPlugin*>(handle);
     return p->editor_open_flag.load() ? 1 : 0;
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__APPLE__)
     if (!handle) return 0;
     return static_cast<LoadedPlugin*>(handle)->editor_open_flag.load() ? 1 : 0;
 #else
     (void)handle;
     return 0;
 #endif
+}
+
+int32_t zvst_get_state(zvst_handle_t handle, uint8_t* out_buf, int32_t cap, int32_t* out_len) {
+    if (out_len) *out_len = 0;
+    if (!handle) return ZVST_INVALID_HANDLE;
+    if (cap < 0 || (cap > 0 && !out_buf)) return ZVST_INVALID_ARGUMENTS;
+    auto* p = static_cast<LoadedPlugin*>(handle);
+    struct Job { std::vector<uint8_t> blob; std::atomic<int> status{ZVST_OTHER}; };
+    auto job = std::make_shared<Job>();
+    if (!run_on_plugin_thread(*p, [p, job] { job->status.store(build_state_blob(*p, job->blob)); }, 10000))
+        return ZVST_OTHER;
+    if (job->status.load() != ZVST_OK) return job->status.load();
+    if (job->blob.size() > static_cast<size_t>(INT32_MAX)) return ZVST_OTHER;
+    const auto size = static_cast<int32_t>(job->blob.size());
+    if (out_len) *out_len = size;
+    if (size > cap) return ZVST_BUFFER_TOO_SMALL;
+    if (size) std::memcpy(out_buf, job->blob.data(), static_cast<size_t>(size));
+    return ZVST_OK;
+}
+
+int32_t zvst_set_state(zvst_handle_t handle, const uint8_t* data, int32_t len) {
+    if (!handle) return ZVST_INVALID_HANDLE;
+    if (!data || len < 0) return ZVST_INVALID_ARGUMENTS;
+    auto* p = static_cast<LoadedPlugin*>(handle);
+    auto blob = std::make_shared<std::vector<uint8_t>>(data, data + len);
+    auto status = std::make_shared<std::atomic<int>>(ZVST_OTHER);
+    if (!run_on_plugin_thread(*p, [p, blob, status] { status->store(apply_state_blob(*p, *blob)); }, 10000))
+        return ZVST_OTHER;
+    return status->load();
 }
 
 } // extern "C"

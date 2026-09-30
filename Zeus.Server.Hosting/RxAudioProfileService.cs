@@ -12,6 +12,9 @@ public sealed class RxAudioProfileService
     private readonly RxChainOrderService _chainOrder;
     private readonly AudioChainMasterBypassService _masterBypass;
     private readonly RxVstEngineService _rxVst;
+    // In-process VST3 / AU hosting: captures and restores each plugin's own
+    // settings with the profile. Optional so older call sites keep working.
+    private readonly AudioPluginBridge? _audioBridge;
     private readonly ILogger<RxAudioProfileService> _log;
 
     public RxAudioProfileService(
@@ -19,8 +22,10 @@ public sealed class RxAudioProfileService
         RxChainOrderService chainOrder,
         AudioChainMasterBypassService masterBypass,
         RxVstEngineService rxVst,
-        ILogger<RxAudioProfileService> log)
+        ILogger<RxAudioProfileService> log,
+        AudioPluginBridge? audioBridge = null)
     {
+        _audioBridge = audioBridge;
         _store = store;
         _chainOrder = chainOrder;
         _masterBypass = masterBypass;
@@ -34,7 +39,13 @@ public sealed class RxAudioProfileService
 
     public async Task<RxAudioProfileEntry> SaveCurrentAsync(string name)
     {
-        var states = await _rxVst.CaptureChainStatesAsync(CaptureTimeout).ConfigureAwait(false);
+        var states = new Dictionary<string, string>(
+            await _rxVst.CaptureChainStatesAsync(CaptureTimeout).ConfigureAwait(false),
+            StringComparer.Ordinal);
+        if (_audioBridge is not null)
+            foreach (var (pid, state) in _audioBridge.CaptureHostedPluginStates(
+                         _chainOrder.CurrentOrder.Concat(_chainOrder.ParkedIds)))
+                states[pid] = state;
         var entry = _store.Save(
             name,
             _chainOrder.CurrentOrder,
@@ -58,6 +69,7 @@ public sealed class RxAudioProfileService
         if (profile is null) return Task.FromResult<RxAudioProfileEntry?>(null);
 
         _rxVst.SetPluginStates(profile.PluginStates);
+        _audioBridge?.RestoreHostedPluginStates(profile.PluginStates);
         _chainOrder.ApplyMembershipAndOrder(profile.Order, profile.Parked);
         _masterBypass.SetRxMasterBypassed(profile.MasterBypass);
         _store.SetSelectedProfile(profile.Name);

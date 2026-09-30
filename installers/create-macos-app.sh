@@ -217,6 +217,13 @@ int main(int argc, char *argv[]) {
              app, app, prev ? ":" : "", prev ? prev : "");
     setenv("DYLD_LIBRARY_PATH", dyld, 1);
 
+    /* Hand breakpoint traps to signal handlers instead of the .NET runtime's
+       Mach exception port. Copy-protected audio plug-ins trap on purpose while
+       they initialise and expect their own SIGTRAP handler to answer; caught
+       by the runtime instead, they hang the thread that loads them (the main
+       thread, on macOS). The runtime still handles SIGTRAP itself. */
+    setenv("PAL_MachExceptionMode", "2", 0);
+
     char p[PATH_MAX];
     snprintf(p, sizeof(p), "%s/wwwroot", app);   setenv("ZEUS_WEBROOT", p, 1);
     snprintf(p, sizeof(p), "%s/BandPlans", app); setenv("ZEUS_BANDPLANS_DIR", p, 1);
@@ -251,6 +258,9 @@ cd "${APP_DIR}"
 export DYLD_LIBRARY_PATH="${APP_DIR}/runtimes/osx-arm64/native:${APP_DIR}/runtimes/osx-x64/native:${DYLD_LIBRARY_PATH}"
 export ZEUS_WEBROOT="${APP_DIR}/wwwroot"
 export ZEUS_BANDPLANS_DIR="${APP_DIR}/BandPlans"
+# Copy-protected audio plug-ins need breakpoint traps left to signal handlers
+# (see the zeus-launch source above).
+export PAL_MachExceptionMode="${PAL_MachExceptionMode:-2}"
 exec ./OpenhpsdrZeus "$@"
 EOF
 chmod +x "${APP_BUNDLE}/Contents/Resources/openhpsdr-zeus-server"
@@ -343,6 +353,9 @@ cd "${APP_DIR}"
 export DYLD_LIBRARY_PATH="${APP_DIR}/runtimes/osx-arm64/native:${APP_DIR}/runtimes/osx-x64/native:${DYLD_LIBRARY_PATH}"
 export ZEUS_WEBROOT="${APP_DIR}/wwwroot"
 export ZEUS_BANDPLANS_DIR="${APP_DIR}/BandPlans"
+# Copy-protected audio plug-ins need breakpoint traps left to signal handlers
+# (see the zeus-launch source above).
+export PAL_MachExceptionMode="${PAL_MachExceptionMode:-2}"
 exec ./OpenhpsdrZeus --server
 EOF
 chmod +x "${SERVER_APP_BUNDLE}/Contents/MacOS/launch.sh"
@@ -451,6 +464,15 @@ if [ -n "${CODESIGN_IDENTITY:-}" ]; then
             sign_one "${bundle}/Contents/Resources/app/Zeus.SupportAgent" \
                 --entitlements "${ENTITLEMENTS_PATH}"
         fi
+
+        # 1c. zeus-plugin-probe reads third-party plug-in bundles during a
+        #     scan; it needs the apphost's entitlements (library validation
+        #     off) or hardened runtime refuses every plug-in not signed by us.
+        while IFS= read -r -d '' probe; do
+            echo "      sign $(basename "${probe}") (entitlements)"
+            sign_one "${probe}" --entitlements "${ENTITLEMENTS_PATH}"
+        done < <(find "${bundle}/Contents/Resources/app" \
+                    -name "zeus-plugin-probe" -type f -print0 2>/dev/null)
 
         # 2. The apphost carries the entitlements (hardened runtime + mic).
         #    The wrapper Server.app has no apphost of its own — it exec's the

@@ -48,17 +48,25 @@ public sealed class VstDirectoryScanService
     private readonly string _pluginRoot;
     private readonly ILogger<VstDirectoryScanService> _log;
     private readonly VstEngineController? _engine;
+    // When present, each .vst3 is described in a probe process so a plugin
+    // that crashes or hangs while being read can't take the server down.
+    private readonly PluginProbeRunner? _probe;
+    private readonly PluginProbeCache? _probeCache;
 
     public VstDirectoryScanService(
         PluginManager manager,
         string pluginRoot,
         ILogger<VstDirectoryScanService> log,
-        VstEngineController? engine = null)
+        VstEngineController? engine = null,
+        PluginProbeRunner? probe = null,
+        PluginProbeCache? probeCache = null)
     {
         _manager = manager;
         _pluginRoot = pluginRoot;
         _log = log;
         _engine = engine;
+        _probe = probe;
+        _probeCache = probeCache;
     }
 
     public sealed record ScannedVst(string Id, string Name, string Vst3Source);
@@ -80,7 +88,8 @@ public sealed class VstDirectoryScanService
     public async Task<ScanResult> ScanAsync(string directory, CancellationToken ct) =>
         await ScanAsync(directory, route: null, ct).ConfigureAwait(false);
 
-    public async Task<ScanResult> ScanAsync(string directory, string? route, CancellationToken ct)
+    /// <param name="format">"vst3" or "clap" scans only that kind of plugin; null scans both.</param>
+    public async Task<ScanResult> ScanAsync(string directory, string? route, CancellationToken ct, string? format = null)
     {
         if (string.IsNullOrWhiteSpace(directory))
             throw new ArgumentException("directory is required", nameof(directory));
@@ -92,8 +101,16 @@ public sealed class VstDirectoryScanService
         var root = _pluginRoot;
         Directory.CreateDirectory(root);
 
+        Func<string, bool> wanted = format?.ToLowerInvariant() switch
+        {
+            null or "" => _ => true,
+            "clap" => IsClap,
+            "vst3" => e => !IsClap(e),
+            _ => throw new ArgumentException($"unknown plugin format '{format}'", nameof(format)),
+        };
+
         if (exactEntry is not null)
-            return await ScanViaFileWalkAsync(directory, root, routes, ct, [exactEntry]).ConfigureAwait(false);
+            return await ScanViaFileWalkAsync(directory, root, routes, ct, wanted(exactEntry) ? [exactEntry] : []).ConfigureAwait(false);
 
         // Engine-driven enumeration when the out-of-process engine is live: it
         // uses JUCE's scanner, which expands "shell" VST3s (e.g. Waves WaveShell)
@@ -102,10 +119,11 @@ public sealed class VstDirectoryScanService
         // actually load (and blacklists crashers), so incompatible files never
         // enter the rack. Falls back to a static file walk when the engine is off
         // (Native mode), which can only see whole-file single plugins.
-        if (_engine is { IsActive: true })
+        if (_engine is { IsActive: true } && format is not "clap")
             return await ScanViaEngineAsync(directory, root, routes, ct).ConfigureAwait(false);
 
-        return await ScanViaFileWalkAsync(directory, root, routes, ct).ConfigureAwait(false);
+        return await ScanViaFileWalkAsync(directory, root, routes, ct,
+            FindVst3Entries(directory).Where(wanted).ToList()).ConfigureAwait(false);
     }
 
     // ── Engine-driven enumeration (expands Waves-style shells) ───────────────────
@@ -213,14 +231,37 @@ public sealed class VstDirectoryScanService
         var activeIds = new HashSet<string>(
             _manager.Active.Select(p => p.Loaded.Manifest.Id), StringComparer.Ordinal);
 
-        // The in-process bridge is the authoritative loadability check + metadata
-        // source on EVERY platform — it is exactly what hosts the plugin in Native
-        // mode. describe() loads the module and reads the factory, so it accepts a
-        // Linux ELF .vst3 / correct-arch bundle (which the Windows-PE heuristic
-        // below rejects) and yields the real plugin name. Falls back to the static
-        // PE heuristic only when the native bridge can't initialise (e.g. the
-        // library isn't staged in a CI/test layout).
-        var bridge = TryCreateScanBridge();
+        // Preferred: describe every module in a probe process (a few at a time).
+        // A plugin that crashes or hangs while its factory is read only kills
+        // its probe; the verdict is cached so it isn't retried until it changes.
+        Dictionary<string, IReadOnlyList<VstCandidate>>? probed = null;
+        if (_probe is not null)
+        {
+            probed = new Dictionary<string, IReadOnlyList<VstCandidate>>(StringComparer.Ordinal);
+            var probeErrors = new System.Collections.Concurrent.ConcurrentBag<ScanError>();
+            await Parallel.ForEachAsync(entries,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount / 2, 1, 4),
+                    CancellationToken = ct,
+                },
+                (entry, token) =>
+                {
+                    var found = ProbeCandidates(entry, probeErrors, token);
+                    lock (probed) probed[entry] = found;
+                    return ValueTask.CompletedTask;
+                }).ConfigureAwait(false);
+            errors.AddRange(probeErrors);
+        }
+
+        // Fallback (no probe host, e.g. a test runner): the in-process bridge is
+        // the loadability check + metadata source — it is exactly what hosts the
+        // plugin in Native mode. describe() loads the module and reads the
+        // factory, so it accepts a Linux ELF .vst3 / correct-arch bundle (which
+        // the Windows-PE heuristic below rejects) and yields the real plugin
+        // name. Falls back to the static PE heuristic only when the native bridge
+        // can't initialise (e.g. the library isn't staged in a CI/test layout).
+        var bridge = probed is null ? TryCreateScanBridge() : null;
 
         foreach (var entry in entries)
         {
@@ -229,7 +270,9 @@ public sealed class VstDirectoryScanService
                 Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             try
             {
-                var candidates = EnumerateVstCandidates(entry, bridge, errors, fileName);
+                var candidates = probed is not null
+                    ? probed.GetValueOrDefault(entry) ?? []
+                    : EnumerateVstCandidates(entry, bridge, errors, fileName);
                 if (candidates.Count == 0)
                 {
                     _log.LogInformation("Skipped VST '{Name}' (not hostable on this platform)", fileName);
@@ -264,7 +307,7 @@ public sealed class VstDirectoryScanService
                     WriteStubAssembly(Path.Combine(pluginDir, StubAssemblyFile));
                     await File.WriteAllTextAsync(
                         Path.Combine(pluginDir, "plugin.json"),
-                        BuildManifestJson(id, routeName, cand.Vst3Abs, cand.Uid, slot),
+                        BuildManifestJson(id, routeName, cand.Vst3Abs, cand.Uid, slot, cand.Format),
                         ct).ConfigureAwait(false);
 
                     await _manager.ActivateAsync(pluginDir, ct).ConfigureAwait(false);
@@ -282,7 +325,97 @@ public sealed class VstDirectoryScanService
         return new ScanResult(directory, registered, skipped, errors);
     }
 
-    private sealed record VstCandidate(string Vst3Abs, string Name, string? Uid);
+    // Format "vst3" or "clap"; Vst3Abs is the plugin file/bundle either way.
+    private sealed record VstCandidate(string Vst3Abs, string Name, string? Uid, string Format = "vst3");
+
+    private static bool IsClap(string path) =>
+        path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .EndsWith(".clap", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Describe one .vst3 in a probe process. Failures (not loadable here,
+    /// crashed, hung) become scan errors and are remembered per plugin version.
+    /// </summary>
+    private IReadOnlyList<VstCandidate> ProbeCandidates(
+        string entry, System.Collections.Concurrent.ConcurrentBag<ScanError> errors, CancellationToken ct)
+    {
+        var abs = Path.GetFullPath(entry);
+        var fileName = Path.GetFileNameWithoutExtension(abs.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var key = "describe|" + abs;
+        var stamp = PluginProbeCache.StampFor(abs);
+        if (_probeCache?.Get(key, stamp) is { Outcome: not ProbeOutcome.Ok } known)
+        {
+            errors.Add(new ScanError(entry, $"skipped: {known.Message} (unchanged since it last failed)"));
+            return [];
+        }
+
+        var result = _probe!.Describe(abs, ct);
+        if (!result.Ok)
+        {
+            // A timeout may be the machine being busy (a licence check over a
+            // slow network, a scan racing other work): try it again next scan
+            // rather than writing the plugin off.
+            if (result.Outcome != ProbeOutcome.TimedOut)
+                _probeCache?.Put(key, new PluginProbeCache.Entry(stamp, result.Outcome, result.Message, DateTime.UtcNow));
+            if (result.Outcome is ProbeOutcome.Crashed or ProbeOutcome.TimedOut)
+                _log.LogWarning("VST {Entry} failed while being read ({Outcome}): {Message}", entry, result.Outcome, result.Message);
+            errors.Add(new ScanError(entry, $"skipped: {result.Message}"));
+            return [];
+        }
+        // Rescanning a plugin is the operator asking to try it again: drop any
+        // earlier refusal to load it, so the next load re-checks it.
+        _probeCache?.ForgetPrefix(ProbingPluginLoadGuard.KeyFor(IsClap(abs) ? "clap" : "vst3", abs, null));
+        var found = CandidatesFromClasses(abs, fileName, result.Reply?.Classes ?? [], IsClap(abs) ? "clap" : "vst3");
+        if (found.Count == 0)
+            errors.Add(new ScanError(entry, "skipped: no audio effects in this plugin (instrument only)"));
+        return found;
+    }
+
+    /// <summary>
+    /// One registration per effect class. Instruments are skipped (they have no
+    /// audio input to process). A module with several effects ("shell") gets
+    /// one plugin per class, each pinned to its class UID; a single-effect
+    /// module keeps loading "the first effect", as before.
+    /// </summary>
+    private static IReadOnlyList<VstCandidate> CandidatesFromClasses(
+        string vst3Abs, string fileName, IReadOnlyList<VstPluginDescriptor> classes, string format = "vst3")
+    {
+        var effects = classes
+            .Where(c => !(c.Category ?? "").Contains("Instrument", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (format == "clap")
+        {
+            // CLAP ids are explicit and stable: always pin the plug-in id. The
+            // " (CLAP)" suffix keeps a plug-in installed in both formats from
+            // colliding with its VST3 twin's generated id, and tells them apart.
+            return effects
+                .Select(c => new VstCandidate(vst3Abs,
+                    (string.IsNullOrWhiteSpace(c.Name) ? fileName : c.Name) + " (CLAP)", c.Uid, "clap"))
+                .ToList();
+        }
+        if (effects.Count == 1)
+        {
+            var name = string.IsNullOrWhiteSpace(effects[0].Name) ? fileName : effects[0].Name;
+            return [new VstCandidate(vst3Abs, name, null)];
+        }
+        return effects
+            .Select(c => new VstCandidate(vst3Abs, string.IsNullOrWhiteSpace(c.Name) ? fileName : c.Name, c.Uid))
+            .ToList();
+    }
+
+    private static IVstBridgeNative? TryCreateClapScanBridge()
+    {
+        try
+        {
+            var b = new ClapBridgeNative();
+            return b.Init(ClapBridgeAbi.Current) == VstBridgeStatus.Ok ? b : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
 
     private static IVstBridgeNative? TryCreateScanBridge()
     {
@@ -305,25 +438,32 @@ public sealed class VstDirectoryScanService
     /// dylib VST3 — the in-process bridge (the actual host) is asked to describe
     /// the file, and a non-empty result both confirms it is hostable on THIS
     /// platform/arch and yields the real plugin name. The bridge also enriches the
-    /// display name on the Windows path when it can introspect the file. The
-    /// in-process loader instantiates the first audio-effect class, so a file
-    /// yields one candidate (uid null = "load the first class"; shell sub-plugin
-    /// selection awaits a load-by-uid ABI).
+    /// display name on the Windows path when it can introspect the file. A file
+    /// yields one candidate per effect class (see <see cref="CandidatesFromClasses"/>).
+    /// Used only when no probe host is available (<see cref="ProbeCandidates"/>).
     /// </summary>
     private IReadOnlyList<VstCandidate> EnumerateVstCandidates(
         string entry, IVstBridgeNative? bridge, List<ScanError> errors, string fileName)
     {
         var vst3Abs = Path.GetFullPath(entry);
 
+        if (IsClap(vst3Abs))
+        {
+            var clap = TryCreateClapScanBridge();
+            var classes = clap is null ? [] : VstBridgeNative.Scan(clap, vst3Abs);
+            if (classes.Count > 0) return CandidatesFromClasses(vst3Abs, fileName, classes, "clap");
+            errors.Add(new ScanError(entry, "skipped (not a loadable CLAP on this platform)"));
+            return [];
+        }
+
         if (IsLoadableVst3(entry, out var reason))
         {
-            var name = fileName;
             if (bridge is not null)
             {
                 var d = VstBridgeNative.Scan(bridge, vst3Abs);
-                if (d.Count > 0 && !string.IsNullOrWhiteSpace(d[0].Name)) name = d[0].Name;
+                if (d.Count > 0) return CandidatesFromClasses(vst3Abs, fileName, d);
             }
-            return [new VstCandidate(vst3Abs, name, null)];
+            return [new VstCandidate(vst3Abs, fileName, null)];
         }
 
         // PE heuristic rejected it — but it may be a Linux/macOS VST3 the bridge
@@ -332,11 +472,7 @@ public sealed class VstDirectoryScanService
         if (bridge is not null)
         {
             var descs = VstBridgeNative.Scan(bridge, vst3Abs);
-            if (descs.Count > 0)
-            {
-                var name = string.IsNullOrWhiteSpace(descs[0].Name) ? fileName : descs[0].Name;
-                return [new VstCandidate(vst3Abs, name, null)];
-            }
+            if (descs.Count > 0) return CandidatesFromClasses(vst3Abs, fileName, descs);
         }
 
         errors.Add(new ScanError(entry, $"skipped (incompatible): {reason}"));
@@ -359,7 +495,8 @@ public sealed class VstDirectoryScanService
             catch { return; } // unreadable dir — skip
             foreach (var e in entries)
             {
-                if (e.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase))
+                if (e.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase) ||
+                    e.EndsWith(".clap", StringComparison.OrdinalIgnoreCase))
                 {
                     // Skip macOS AppleDouble sidecars (e.g. "._ReLife.vst3").
                     // These resource-fork shadow files travel next to the real
@@ -382,7 +519,8 @@ public sealed class VstDirectoryScanService
 
     private static string? ResolveExactVst3Entry(string path)
     {
-        if (!path.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!path.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase) &&
+            !path.EndsWith(".clap", StringComparison.OrdinalIgnoreCase)) return null;
         if (File.Exists(path) || Directory.Exists(path)) return Path.GetFullPath(path);
         return null;
     }
@@ -579,7 +717,8 @@ public sealed class VstDirectoryScanService
         string name,
         string vst3Path,
         string? vst3Uid = null,
-        string slot = "tx.post-leveler")
+        string slot = "tx.post-leveler",
+        string format = "vst3")
     {
         // Anonymous object keyed to the manifest's JsonPropertyName values
         // (camelCase). Most scanned VSTs route into the TX insert chain so they
@@ -595,12 +734,13 @@ public sealed class VstDirectoryScanService
             name,
             version = "1.0.0",
             author = "Scanned VST",
-            description = $"VST3 plugin registered from a scanned directory ({name}).",
+            description = $"{(format == "clap" ? "CLAP" : "VST3")} plugin registered from a scanned directory ({name}).",
             license = "Unknown",
             sdk = new { abi = 1, minVersion = "1.0.0" },
             entrypoint = new { assembly = StubAssemblyFile },
             audio = new
             {
+                format,
                 vst3Path,
                 vst3Uid,
                 slot,

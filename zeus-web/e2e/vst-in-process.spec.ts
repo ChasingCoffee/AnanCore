@@ -5,10 +5,10 @@
 // upstream's server. That server and the engine's source are gone, and ANAN
 // Core no longer launches closed or third-party executables — VST3 runs in the
 // in-process bridge. The spec now pins what a Windows operator sees instead:
-// Scan plugins on BOTH rails in Native mode (Windows used to get the engine
-// button INSTEAD, and TX only in VST mode — no way to add a VST3 at all; field
-// issue #62), NATIVE status, no Native/VST toggle, no engine download — and
-// that Scan plugins opens the suite with its VST3 folder scan. Stubbed backend,
+// the TX / RX Suite button on BOTH rails in Native mode (Windows used to get
+// the engine button instead, and TX only in VST mode — no way to add a VST3 at
+// all; field issue #62), NATIVE status, no Native/VST toggle, no engine
+// download — and that the Suite opens with its plugin scans. Stubbed backend,
 // Windows-shaped, with the engine routes retired exactly as the server has
 // them (install/repair POST -> 410, processing-mode -> native).
 import { expect, test, type Page, type Route } from '@playwright/test';
@@ -222,7 +222,7 @@ async function stubZeusApi(page: Page): Promise<EngineWorld> {
   return world;
 }
 
-test('Windows operator adds VST3 in-process: Scan plugins on both rails, no engine', async ({ page }) => {
+test('Windows operator adds VST3 in-process: Suite on both rails, no engine', async ({ page }) => {
   const pageErrors: string[] = [];
   page.on('pageerror', (err) => pageErrors.push(err.message));
   const world = await stubZeusApi(page);
@@ -234,9 +234,11 @@ test('Windows operator adds VST3 in-process: Scan plugins on both rails, no engi
   const txRail = page.getByRole('region', { name: 'TX Audio' });
   const rxRail = page.getByRole('region', { name: 'RX Audio' });
 
-  // Scan/Add on BOTH rails, in Native mode, on the Windows-shaped server.
-  await expect(txRail.getByRole('button', { name: 'Scan plugins' })).toBeVisible();
-  await expect(rxRail.getByRole('button', { name: 'Scan plugins' })).toBeVisible();
+  // The way into the Suite on BOTH rails, in Native mode, on the
+  // Windows-shaped server; scanning itself lives in the Suite.
+  await expect(txRail.getByRole('button', { name: 'TX Suite' })).toBeVisible();
+  await expect(rxRail.getByRole('button', { name: 'RX Suite' })).toBeVisible();
+  await expect(txRail.getByRole('button', { name: 'Scan plugins' })).toHaveCount(0);
   await expect(txRail.getByText('NATIVE')).toBeVisible();
 
   // No engine download, no engine status, no Native/VST route toggle.
@@ -245,15 +247,18 @@ test('Windows operator adds VST3 in-process: Scan plugins on both rails, no engi
   await expect(txRail.getByRole('button', { name: 'VST', exact: true })).toHaveCount(0);
   await expect(txRail.getByRole('button', { name: 'Native', exact: true })).toHaveCount(0);
 
-  // Scan plugins opens the TX Audio Suite — in a separate window
-  // (openAudioSuiteWindow) — with its VST3 folder scan.
+  // TX Suite opens the TX Audio Suite — in a separate window
+  // (openAudioSuiteWindow) — with its plugin scans.
   const suitePromise = page.context().waitForEvent('page');
-  await txRail.getByRole('button', { name: 'Scan plugins' }).click();
+  await txRail.getByRole('button', { name: 'TX Suite' }).click();
   const suite = await suitePromise;
   suite.on('pageerror', (err) => pageErrors.push(`suite: ${err.message}`));
   await suite.waitForLoadState();
-  await expect(suite.getByRole('button', { name: 'Scan VSTs' })).toBeVisible();
-  await expect(suite.getByRole('button', { name: /Add VST folder/ })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Scan All' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Scan CLAP' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Scan VST3' })).toBeVisible();
+  await expect(suite.getByRole('button', { name: /Set paths/ })).toBeVisible();
+  await expect(suite.getByRole('button', { name: 'Clear DB' })).toBeVisible();
 
   // Nothing tried to install or configure an engine.
   expect(world.installPosts).toBe(0);

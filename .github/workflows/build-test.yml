@@ -84,6 +84,36 @@ jobs:
       - name: Init DeepCW model submodule (frontend build dependency)
         run: git submodule update --init zeus-web/external/deepcw-engine
 
+      # Build the VST3 host bridge and its test plug-in so the real-hosting
+      # tests (VstBridgeTestPluginTests) run on every OS/arch instead of
+      # skipping. Must precede the .NET build: the test project copies the
+      # bridge into its output after it builds. Only the hosting subset of the
+      # vst3sdk submodule is fetched (no vstgui / samples).
+      - name: Init vst3sdk (hosting subset) + CLAP SDK submodules
+        shell: bash
+        run: |
+          git submodule update --init native/zeus-vst-bridge/third_party/vst3sdk native/zeus-vst-bridge/third_party/clap
+          git -C native/zeus-vst-bridge/third_party/vst3sdk submodule update --init base pluginterfaces public.sdk cmake
+
+      - name: Install X11 headers (VST3 editor hosting)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+
+      - name: Build VST3 bridge + test plug-in
+        shell: bash
+        run: |
+          cmake -S native/zeus-vst-bridge -B native/zeus-vst-bridge/build -DCMAKE_BUILD_TYPE=Release -DZEUS_VST_REQUIRE_SDK=ON
+          cmake --build native/zeus-vst-bridge/build --config Release --parallel
+          ctest --test-dir native/zeus-vst-bridge/build -C Release --output-on-failure
+
+      # macOS: the AU bridge too, so the AU state tests run against a fresh
+      # build rather than the committed dylib.
+      - name: Build AU bridge (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -S native/zeus-au-bridge -B native/zeus-au-bridge/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native/zeus-au-bridge/build --parallel
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
         with:

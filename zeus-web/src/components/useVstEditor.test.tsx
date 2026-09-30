@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from './meters/__tests__/harness';
-import { useVstEditor } from './useVstEditor';
+import { EDITOR_STATE_POLL_MS, useVstEditor } from './useVstEditor';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -183,6 +183,52 @@ describe('useVstEditor', () => {
     );
 
     hook.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it('notices when the operator closes the editor window itself', async () => {
+    vi.useFakeTimers();
+    let windowOpen = false;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      if (init?.method === 'POST') windowOpen = true;
+      return jsonResponse({ open: windowOpen });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const hook = renderHook(() => useVstEditor('com.openhpsdr.zeus.vst.clear'));
+    await flushAsyncWork();
+    await act(async () => {
+      hook.result.current.openEditor();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsyncWork();
+    expect(hook.result.current.open).toBe(true);
+
+    // Still open on the next poll: nothing changes.
+    await act(async () => {
+      vi.advanceTimersByTime(EDITOR_STATE_POLL_MS);
+    });
+    await flushAsyncWork();
+    expect(hook.result.current.open).toBe(true);
+
+    // The operator closes the native window with its own close button.
+    windowOpen = false;
+    await act(async () => {
+      vi.advanceTimersByTime(EDITOR_STATE_POLL_MS);
+    });
+    await flushAsyncWork();
+    expect(hook.result.current.open).toBe(false);
+
+    // Closed: the polling stops.
+    const calls = fetchMock.mock.calls.length;
+    await act(async () => {
+      vi.advanceTimersByTime(EDITOR_STATE_POLL_MS * 3);
+    });
+    expect(fetchMock.mock.calls.length).toBe(calls);
+
+    hook.unmount();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 });

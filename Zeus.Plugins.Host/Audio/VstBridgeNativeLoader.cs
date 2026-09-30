@@ -56,6 +56,13 @@ internal static class VstBridgeNativeLoader
         yield return Path.Combine(baseDir, fileName);
     }
 
+    /// <summary>This app's <c>runtimes/&lt;rid&gt;/native</c> folder, if present.</summary>
+    internal static string? NativeDirectory()
+    {
+        var dir = Path.Combine(AppContext.BaseDirectory, "runtimes", CurrentRid(), "native");
+        return Directory.Exists(dir) ? dir : null;
+    }
+
     private static string CurrentRid()
     {
         string arch = RuntimeInformation.ProcessArchitecture switch

@@ -9,7 +9,7 @@
 // action plus the plugin's identity. Reorder / park / remove still work
 // from the rack slot chrome, and the VST processes audio regardless.
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useVstEditor, type VstEditorRoute } from './useVstEditor';
 import { useAudioSuiteStore } from '../state/audio-suite-store';
 
@@ -33,17 +33,16 @@ export function GenericVstPanel({ pluginId, name, route = 'tx' }: GenericVstPane
     enginePhase === 'staging' ||
     enginePhase === 'configuring';
 
-  // Selecting this VST's chip mounts the panel — auto-open its real
-  // editor window so the chip click alone pops the GUI (no extra button
-  // press). Fires once per mount; the server-side open is idempotent and
-  // the operator can still Close it below. Re-selecting the chip remounts
-  // and re-opens. A non-loadable .vst3 surfaces its error in the pane.
-  const autoOpenedRef = useRef(false);
+  // The editor opens when the operator asks: a click on this plugin's chip
+  // (a request left in the store) or Open Editor below. The Suite selecting
+  // its first plugin on open only shows this panel.
+  const editorOpenRequest = useAudioSuiteStore((s) => s.editorOpenRequest);
+  const clearEditorOpenRequest = useAudioSuiteStore((s) => s.clearEditorOpenRequest);
   useEffect(() => {
-    if (autoOpenedRef.current) return;
-    autoOpenedRef.current = true;
+    if (editorOpenRequest !== pluginId) return;
+    clearEditorOpenRequest();
     openEditor();
-  }, [openEditor]);
+  }, [editorOpenRequest, pluginId, clearEditorOpenRequest, openEditor]);
 
   return (
     <div
@@ -101,10 +100,10 @@ export function GenericVstPanel({ pluginId, name, route = 'tx' }: GenericVstPane
           {busy ? (starting ? 'Starting…' : '…') : open ? 'Close Editor' : 'Open Editor'}
         </button>
         <span style={{ color: 'var(--fg-3)', fontSize: 10, lineHeight: 1.3, flex: 1, minWidth: 160 }}>
-          Selecting this VST opens its real editor in a separate desktop
-          window — a VST3 GUI is a native window, not browser HTML, so it
-          can&rsquo;t render here. Use Close to dismiss it; the VST
-          processes audio either way.
+          Click the plugin&rsquo;s chip or Open Editor to show its own window
+          on the desktop of the computer running Zeus — a plugin GUI is a native window, not
+          browser HTML, so it can&rsquo;t render here. The plugin processes
+          audio whether its editor is open or not.
         </span>
       </div>
 

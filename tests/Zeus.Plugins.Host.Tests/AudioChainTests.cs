@@ -316,6 +316,43 @@ public class AudioChainTests
         Assert.Equal(0, t.NonFiniteRepairs);
     }
 
+    [Fact]
+    public void TakeSlotPeaks_NamesEachPluginsSlowestBlock_ThenStartsANewWindow()
+    {
+        var chain = new AudioChain();
+        var slow = new SlowPlugin(TimeSpan.FromMilliseconds(30));
+        chain.SetSlot(0, new AddPlugin(1f));
+        chain.SetSlot(2, slow);
+        chain.SetSlot(3, new AddPlugin(2f));
+        chain.SetSlotBypass(3, true);
+
+        var input = new float[480];   // 10 ms at 48 kHz
+        var output = new float[480];
+        chain.Process(input, output, Ctx(frames: 480));
+
+        var peaks = chain.TakeSlotPeaks();
+        Assert.Equal(new[] { 0, 2 }, peaks.Select(p => p.Slot)); // bypassed slot 3 never ran
+        var slowPeak = peaks.Single(p => p.Slot == 2);
+        Assert.Same(slow, slowPeak.Plugin);
+        Assert.True(slowPeak.PeakMicros >= 25_000, $"peak {slowPeak.PeakMicros} us");
+        Assert.InRange(slowPeak.BlockMicros, 9_900, 10_100);
+
+        Assert.Empty(chain.TakeSlotPeaks()); // nothing ran since
+    }
+
+    private sealed class SlowPlugin(TimeSpan delay) : IAudioPlugin
+    {
+        public string DisplayName => "slow";
+        public AudioPluginRequirements Requirements => new(48000, 1, 256);
+        public Task InitializeAudioAsync(IAudioHost host, CancellationToken ct) => Task.CompletedTask;
+        public Task ShutdownAudioAsync(CancellationToken ct) => Task.CompletedTask;
+        public void Process(ReadOnlySpan<float> input, Span<float> output, AudioBlockContext ctx)
+        {
+            Thread.Sleep(delay);
+            input.CopyTo(output);
+        }
+    }
+
     private sealed class AddPlugin : IAudioPlugin
     {
         private readonly float _bias;

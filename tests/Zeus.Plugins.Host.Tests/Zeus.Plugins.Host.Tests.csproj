@@ -33,11 +33,16 @@
     <ProjectReference Include="..\..\Zeus.Plugins.Host\Zeus.Plugins.Host.csproj" />
   </ItemGroup>
 
-  <!-- Copy the native VST3 bridge into the test output dir if a local
-       build exists. The bridge is not built by dotnet; operators run
-       cmake under native/zeus-vst-bridge/ once, then re-run dotnet test.
-       VstBridgeNativeRealTests.cs skips gracefully when absent. -->
+  <!-- Copy a locally built native bridge into the test output dir, both at
+       the root and over runtimes/<rid>/native (the loader probes the RID
+       directory first, so a committed binary would otherwise shadow the fresh
+       build). The bridges are not built by dotnet: run cmake under
+       native/zeus-vst-bridge/ (and native/zeus-au-bridge/ on macOS), then
+       re-run dotnet test. The real-bridge tests skip when no build exists. -->
   <Target Name="CopyVstBridgeDylib" AfterTargets="Build">
+    <PropertyGroup>
+      <ZeusNativeRidDir>$(OutDir)runtimes/$(NETCoreSdkRuntimeIdentifier)/native</ZeusNativeRidDir>
+    </PropertyGroup>
     <ItemGroup>
       <BridgeMac Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\libzeus-vst-bridge.dylib" />
       <BridgeLinux Include="$(MSBuildThisFileDirectory)..\..\native\zeus-vst-bridge\build\libzeus-vst-bridge.so" />
@@ -46,16 +51,20 @@
     <Copy SourceFiles="@(BridgeMac)"   DestinationFolder="$(OutDir)" Condition="Exists('%(BridgeMac.FullPath)')"   SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(BridgeLinux)" DestinationFolder="$(OutDir)" Condition="Exists('%(BridgeLinux.FullPath)')" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(BridgeWin)"   DestinationFolder="$(OutDir)" Condition="Exists('%(BridgeWin.FullPath)')"   SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BridgeMac)"   DestinationFolder="$(ZeusNativeRidDir)" Condition="Exists('%(BridgeMac.FullPath)')"   SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BridgeLinux)" DestinationFolder="$(ZeusNativeRidDir)" Condition="Exists('%(BridgeLinux.FullPath)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(BridgeWin)"   DestinationFolder="$(ZeusNativeRidDir)" Condition="Exists('%(BridgeWin.FullPath)')"   SkipUnchangedFiles="true" />
   </Target>
 
-  <!-- Copy the native AU bridge (macOS only) into the test output dir if a
-       local cmake build exists. AuBridgeNativeRealTests skips gracefully when
-       absent, so the suite stays green on machines / platforms without it. -->
   <Target Name="CopyAuBridgeDylib" AfterTargets="Build">
+    <PropertyGroup>
+      <ZeusNativeRidDir>$(OutDir)runtimes/$(NETCoreSdkRuntimeIdentifier)/native</ZeusNativeRidDir>
+    </PropertyGroup>
     <ItemGroup>
       <AuBridgeMac Include="$(MSBuildThisFileDirectory)..\..\native\zeus-au-bridge\build\libzeus-au-bridge.dylib" />
     </ItemGroup>
     <Copy SourceFiles="@(AuBridgeMac)" DestinationFolder="$(OutDir)" Condition="Exists('%(AuBridgeMac.FullPath)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(AuBridgeMac)" DestinationFolder="$(ZeusNativeRidDir)" Condition="Exists('%(AuBridgeMac.FullPath)')" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

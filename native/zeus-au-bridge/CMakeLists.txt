@@ -14,6 +14,12 @@
 # passthrough — mirroring the VST3 bridge's graceful-degrade behaviour.
 
 cmake_minimum_required(VERSION 3.20)
+# Must precede project(). The libraries ship to operators' Macs, so they
+# cannot inherit the build machine's OS version as their minimum.
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+endif()
+
 project(zeus-au-bridge VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
