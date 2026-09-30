@@ -911,7 +911,7 @@ static bool create_host_window(ClapPlugin& p, uint32_t w, uint32_t h, bool resiz
         wc.cbSize = sizeof(wc);
         wc.lpfnWndProc = clap_editor_wndproc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); // IDC_ARROW (wide, without UNICODE)
         wc.lpszClassName = kClapEditorClass;
         RegisterClassExW(&wc);
     });
