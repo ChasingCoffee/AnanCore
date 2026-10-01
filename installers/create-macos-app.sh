@@ -173,6 +173,13 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" << EOF
     <string>Zeus uses the microphone for SSB / digital-mode TX uplink to your radio when you key MOX.</string>
     <key>NSCameraUsageDescription</key>
     <string>Zeus does not record video. The OS asks because the embedded webview lists media devices.</string>
+    <!-- Local Network privacy (macOS 15+): without this key the OS never
+         offers the permission prompt, the app never appears under System
+         Settings > Privacy & Security > Local Network, and every packet to a
+         radio on the LAN fails with EHOSTUNREACH ("No route to host") —
+         discovery may still work via broadcast, but connect returns 500. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Zeus connects to your OpenHPSDR radio on the local network.</string>
 </dict>
 </plist>
 EOF
@@ -323,6 +330,10 @@ cat > "${SERVER_APP_BUNDLE}/Contents/Info.plist" << EOF
     <string>Zeus uses the microphone for SSB / digital-mode TX uplink to your radio when you key MOX.</string>
     <key>NSCameraUsageDescription</key>
     <string>Zeus does not record video. The OS asks because the embedded webview lists media devices.</string>
+    <!-- Same Local Network descriptor as Zeus.app: the server talks to the
+         radio over the LAN just the same. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Zeus connects to your OpenHPSDR radio on the local network.</string>
 </dict>
 </plist>
 EOF
